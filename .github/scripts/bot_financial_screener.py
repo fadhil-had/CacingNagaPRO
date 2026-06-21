@@ -98,7 +98,7 @@ def main():
     if mode_analisis == "MANUAL":
         system_instruction = (
             "Anda adalah seorang Analis Saham senior senior. Tugas Anda membuat 'EXECUTIVE SUMMARY' multi-analisis. "
-            "Evaluasi data fundamental, tren harga 3 bulan, dan judul berita terkini untuk menentukan sentimen pasar.\n"
+            "Evaluasi data fundamental, teknikal, tren harga 3 bulan, dan judul berita terkini untuk menentukan sentimen pasar.\n"
             "Format output Anda WAJIB mengikuti struktur ringkas ini tanpa basa-basi pengantar:\n\n"
             "1. **[KODE SAHAM] - KEPUTUSAN: [BUY/HOLD/SELL]**\n"
             "   * **Alasan Utama:** (Maksimal 2 kalimat analisis kombinasi kesehatan fundamental dan posisi teknikal harga).\n"
@@ -109,7 +109,7 @@ def main():
     else:
         system_instruction = (
             "Anda adalah seorang Financial Advisor profesional. Data berikut adalah 3 saham otomatis terbaik hasil screening nilai fundamental (Sinyal BUY). "
-            "Tugas Anda mengintegrasikan ulasan berita dan tren harga ke dalam 'EXECUTIVE SUMMARY TOP 3 BUY PICKS' berikut:\n"
+            "Tugas Anda mengintegrasikan fundamental, teknikal, ulasan berita dan tren harga ke dalam 'EXECUTIVE SUMMARY TOP 3 BUY PICKS' berikut:\n"
             "Format output Anda WAJIB mengikuti struktur ringkas ini tanpa kalimat pembuka:\n\n"
             "1. **[KODE SAHAM] - REKOMENDASI: BUY**\n"
             "   * **Tesis Investasi:** (Maksimal 2 kalimat mengapa layak akumulasi berbasis ROE dan momentum harga 3 bulan).\n"
