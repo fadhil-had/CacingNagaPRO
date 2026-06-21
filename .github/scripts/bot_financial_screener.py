@@ -88,8 +88,17 @@ def main():
         config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.5)
     )
     
+    # 1. Print ke log terminal standard GitHub Actions
     print("\n=== 📊 HASIL ANALISIS EKUATAS GEMINI ===")
     print(response.text)
+
+    # 2. Cetak ke halaman depan Summary GitHub Actions (Supaya muncul sesuai keinginan Anda di image_189931.png)
+    summary_file_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file_path:
+        with open(summary_file_path, "a", encoding="utf-8") as f:
+            f.write("\n### 📊 HASIL ANALISIS EKUATAS GEMINI (EXECUTIVE SUMMARY)\n")
+            f.write(response.text)
+            f.write("\n\n---\n")
 
 if __name__ == "__main__":
     main()
