@@ -33,47 +33,59 @@ def dapatkan_top_3_fundamental_ihsg():
 def main():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("❌ Error: GEMINI_API_KEY tidak ditemukan.")
+        print("❌ Error: GEMINI_API_KEY tidak ditemukan di Repository Secrets.")
         return
     client = genai.Client(api_key=api_key)
 
-    # Deteksi argumen dari GitHub Actions (Jika ada argumen = Mode Manual)
     args = sys.argv[1:]
     data_saham = []
     
     if args and args[0].strip() != "":
         mode_analisis = "MANUAL"
-        print(f"✍️ Mode Manual diaktifkan mendeteksi saham: {args}")
-        for ticker in args[:3]: # Maksimal 3 saham
+        print(f"✍️ [MODE MANUAL] Memproses kode input: {args}")
+        for ticker in args[:3]:
             res = ambil_metrik_fundamental(ticker.strip().upper())
             if not res["error"]: data_saham.append(res)
     else:
         mode_analisis = "OTOMATIS"
-        print("🤖 Mode Otomatis aktif. Mencari 3 Saham Fundamental Terbaik...")
+        print("🤖 [MODE OTOMATIS] Mencari 3 Saham Berbasis Nilai Fundamental ROE Tertinggi...")
         data_saham = dapatkan_top_3_fundamental_ihsg()
 
     if not data_saham:
         print("❌ Tidak ada data saham yang berhasil diproses.")
         return
 
-    # Tampilkan log data mentah di terminal GitHub
-    print("\n--- DATA MENTAH SAHAM ---")
     prompt_data = ""
     for s in data_saham:
-        print(f"[{s['ticker']}] {s['nama']} | Harga: {s['harga_terakhir']} | P/E: {s['pe_ratio']} | ROE: {s['roe']}")
         prompt_data += f"\nSaham: {s['ticker']} ({s['nama']})\nHarga: {s['harga_terakhir']}\nP/E: {s['pe_ratio']}\nPBV: {s['pbv_ratio']}\nROE: {s['roe']}\n"
 
-    system_instruction = (
-        "Anda adalah Analis Ekuitas Senior. Berikan rekomendasi akhir mutlak BUY, HOLD, atau SELL untuk setiap saham berdasarkan data fundamentalnya." 
-        if mode_analisis == "MANUAL" else 
-        "Anda adalah Financial Advisor. 3 saham ini adalah hasil filter otomatis terbaik (Sinyal BUY). Ulas mendalam tesis investasi dan potensinya."
-    )
+    # --- KONFIGURASI EXECUTIVE SUMMARY (TO THE POINT) ---
+    if mode_analisis == "MANUAL":
+        system_instruction = (
+            "Anda adalah seorang Analis Saham senior yang sangat efisien. "
+            "Tugas Anda adalah membuat 'EXECUTIVE SUMMARY' dari data fundamental saham pilihan user. "
+            "Format output Anda WAJIB mengikuti struktur ringkas ini tanpa basa-basi pengantar:\n\n"
+            "1. **[KODE SAHAM] - KEPUTUSAN: [BUY/HOLD/SELL]**\n"
+            "   * **Alasan Utama:** (Maksimal 2 kalimat analisis valuasi P/E atau profitabilitas ROE).\n"
+            "   * **Risiko Kunci:** (1 risiko harian utama yang wajib diwaspadai).\n\n"
+            "Langsung berikan kesimpulan, akhiri dengan 1 baris kalimat disclaimer singkat."
+        )
+    else:
+        system_instruction = (
+            "Anda adalah seorang Financial Advisor senior yang sangat efisien. "
+            "Data yang diberikan adalah 3 saham otomatis terbaik hasil filter internal dengan sinyal kuat untuk BUY. "
+            "Tugas Anda adalah membuat 'EXECUTIVE SUMMARY TOP 3 BUY PICKS' menggunakan struktur ringkas ini tanpa kalimat pembuka:\n\n"
+            "1. **[KODE SAHAM] - REKOMENDASI: BUY**\n"
+            "   * **Tesis Investasi:** (Maksimal 2 kalimat mengapa layak dibeli berdasarkan kekuatan ROE harian).\n"
+            "   * **Faktor Risiko:** (1 risiko makro/mikro krusial emiten ini).\n\n"
+            "Langsung berikan kesimpulan, akhiri dengan 1 baris kalimat disclaimer singkat."
+        )
 
-    print("\n🤖 Mengirimkan data ke Gemini AI...")
+    print("🤖 Mengirimkan data dan menyusun ringkasan eksekutif via Gemini AI...")
     response = client.models.generate_content(
         model='gemini-2.5-flash',
         contents=f"Mode: {mode_analisis}\nData:\n{prompt_data}",
-        config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.7)
+        config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.5)
     )
     
     print("\n=== 📊 HASIL ANALISIS EKUATAS GEMINI ===")
