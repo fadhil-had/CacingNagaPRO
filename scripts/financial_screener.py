@@ -1,14 +1,11 @@
 import os
-import streamlit as st
+import sys
+import argparse
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from google import genai
 from google.genai import types
-
-# Mengambil API Key dari Environment Variable
-api_key = os.environ.get("GEMINI_API_KEY", "ISI_API_KEY_ANDA_DISINI")
-client = genai.Client(api_key=api_key)
 
 def hitung_rsi(series, period=14):
     """Menghitung RSI secara lokal menggunakan pandas"""
@@ -22,18 +19,18 @@ def ambil_semua_ticker_dari_excel(file_path="resource/daftar-saham.xlsx"):
     """Membaca semua list saham dari kolom 'Kode' di file Excel dan menambahkan .JK"""
     try:
         if not os.path.exists(file_path):
-            st.error(f"❌ File '{file_path}' tidak ditemukan! Pastikan folder 'resource' dan file Excel sudah benar.")
+            print(f"❌ File '{file_path}' tidak ditemukan!")
             return []
             
         df_excel = pd.read_excel(file_path)
         if 'Kode' not in df_excel.columns:
-            st.error("❌ Kolom 'Kode' tidak ditemukan di file Excel! Pastikan nama kolom sesuai.")
+            print("❌ Kolom 'Kode' tidak ditemukan di file Excel!")
             return []
             
         tickers = df_excel['Kode'].dropna().astype(str).str.strip().str.upper()
         return (tickers + ".JK").tolist()
     except Exception as e:
-        st.error(f"❌ Gagal membaca Excel: {str(e)}")
+        print(f"❌ Gagal membaca Excel: {str(e)}")
         return []
 
 def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
@@ -89,7 +86,7 @@ def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
             skor += 1
             kondisi_teks.append(f"✅ Momentum (40 <= RSI:{hari_ini['RSI']:.1f} <= 65)")
         else:
-            kondisi_teks.append(f"❌ Momentum (RSI:{hari_ini['RSI']:.1f} di luar 40-65)")
+            kondisi_teks.append(f"❌ Momentum")
 
         # Faktor 3: Convergence (MACD)
         if hari_ini['MACD'] > hari_ini['Signal_Line'] and hari_ini['Histogram'] > 0:
@@ -104,7 +101,7 @@ def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
             skor += 1
             kondisi_teks.append(f"✅ Volume (Lonjakan: {lonjakan_vol:.2f}x)")
         else:
-            kondisi_teks.append(f"❌ Volume (Lonjakan: {lonjakan_vol:.2f}x)")
+            kondisi_teks.append(f"❌ Volume")
 
         return {
             "ticker": ticker_code,
@@ -118,103 +115,57 @@ def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
     except Exception as e:
         return {"error": True, "alasan": str(e)}
 
-# --- UI STREAMLIT ---
-st.set_page_config(page_title="CacingNagaPRO - Stock Screener", page_icon="📈", layout="wide")
-st.title("📈 CacingNagaPRO Multi-Factor Stock Screener")
-st.caption("Aplikasi screening saham IHSG berbasis Multi-Factor Confluence (Trend, RSI, MACD, Volume) terintegrasi Gemini AI")
-
-# Pilihan Timeframe / Perspektif Trading
-mode_tren = st.radio(
-    "Pilih Perspektif Jangka Waktu Trading:",
-    options=["1hari", "1minggu", "1bulan"],
-    format_func=lambda x: "Harian (Day Trading / Momentum Cepat)" if x == "1hari" else (
-        "Mingguan (Swing Trading Jangka Pendek)" if x == "1minggu" else "Bulanan (Position Trading / Swing Panjang)"
-    ),
-    horizontal=True
-)
-
-mode_manual = st.checkbox("Saya ingin input kode saham secara manual (Maksimal 3 Saham)", value=False)
-data_saham = []
-
-if mode_manual:
-    col1, col2, col3 = st.columns(3)
-    input1 = col1.text_input("Saham 1:", value="BBRI.JK").strip().upper()
-    input2 = col2.text_input("Saham 2:", value="TLKM.JK").strip().upper()
-    input3 = col3.text_input("Saham 3:", value="ASII.JK").strip().upper()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--trend', choices=['1hari', '1minggu', '1bulan'], default='1minggu')
+    args = parser.parse_args()
     
-    if st.button("🚀 Mulai Analisis Manual"):
-        tickers_input = filter(None, list(set([input1, input2, input3])))
-        with st.spinner("Mengunduh data pasar..."):
-            # Download massal lokal untuk saham manual
-            data_massal = yf.download(list(tickers_input), period="1y", interval="1d", group_by='ticker', progress=False)
-            
-            for t in tickers_input:
-                if t in data_massal and not data_massal[t].empty:
-                    res = analisa_saham_confluence(t, data_massal[t], mode_tren)
-                    if not res["error"]:
-                        data_saham.append(res)
-            
-            # Ambil semua data tanpa batasan top 3 jika manual
-            data_saham = sorted(data_saham, key=lambda x: (x["skor"], x["lonjakan_volume"]), reverse=True)
-else:
-    if st.button("🔍 Jalankan Screening Massal (900+ Saham Excel)"):
-        pool = ambil_semua_ticker_dari_excel("resource/daftar-saham.xlsx")
+    pool = ambil_semua_ticker_dari_excel("resource/daftar-saham.xlsx")
+    if not pool:
+        return
         
-        if pool:
-            progress_bar = st.progress(0)
-            st.info(f"📥 Mengunduh dan memproses data historis untuk {len(pool)} saham dari Excel. Mohon tunggu...")
-            
-            # Download massal multi-threading super cepat
-            data_massal = yf.download(pool, period="1y", interval="1d", group_by='ticker', progress=False, threads=True)
-            progress_bar.progress(50)
-            
-            saham_lolos = []
-            for t in pool:
-                if t in data_massal and not data_massal[t].empty:
-                    res = analisa_saham_confluence(t, data_massal[t], mode_tren)
-                    # Filter awal: Hanya ambil yang masuk Watchlist (3/4) atau Strong Buy (4/4)
-                    if not res["error"] and res["skor"] >= 3:
-                        saham_lolos.append(res)
-            
-            # Ambil hanya TOP 3 dengan kombinasi skor tertinggi dan lonjakan volume terbesar
-            data_saham = sorted(saham_lolos, key=lambda x: (x["skor"], x["lonjakan_volume"]), reverse=True)[:3]
-            progress_bar.progress(100)
-            progress_bar.empty()
-
-# --- VALIDASI DAN OUTPUT HASIL ---
-if data_saham:
-    st.success(f"✅ Berhasil menyeleksi {len(data_saham)} saham terbaik!")
+    print(f"📥 Mengunduh data historis massal untuk {len(pool)} saham...")
+    data_massal = yf.download(pool, period="1y", interval="1d", group_by='ticker', progress=False, threads=True)
     
-    # Menampilkan ringkasan tabel data teknikal mentah di Streamlit UI
-    df_tampil = pd.DataFrame(data_saham)[["ticker", "status", "harga_terakhir", "skor", "lonjakan_volume"]]
-    df_tampil["harga_terakhir"] = df_tampil["harga_terakhir"].apply(lambda x: f"Rp {x:,.2f}")
-    df_tampil["lonjakan_volume"] = df_tampil["lonjakan_volume"].apply(lambda x: f"{x:.2f}x")
-    st.subheader("📋 Hasil Filter Matriks Konfluensi")
-    st.table(df_tampil)
-    
-    # 3. LAZY-LOADING BERITA: Ambil berita hanya untuk saham yang masuk Top Picks
-    with st.spinner("📰 Mengambil data berita katalis pasar harian..."):
-        prompt_data = f"PERSPEKTIF TREN TRADING: {mode_tren.upper()}\n\n"
-        for s in data_saham:
-            ticker_obj = yf.Ticker(s['ticker'])
-            berita_terbaru = ticker_obj.news
-            teks_berita = ""
-            if berita_terbaru:
-                for item in berita_terbaru[:2]:
-                    teks_berita += f"- {item.get('title')} ({item.get('publisher')})\n"
-            else:
-                teks_berita = "- Tidak ada berita terbaru harian.\n"
+    saham_lolos = []
+    for t in pool:
+        if t in data_massal and not data_massal[t].empty:
+            res = analisa_saham_confluence(t, data_massal[t], args.trend)
+            if not res["error"] and res["skor"] >= 3:
+                saham_lolos.append(res)
+                
+    top_3 = sorted(saham_lolos, key=lambda x: (x["skor"], x["lonjakan_volume"]), reverse=True)[:3]
 
-            prompt_data += f"""
-            Ticker: {s['ticker']} | Status Teknikal: {s['status']} (Score {s['skor']}/4)
-            Harga Terakhir: Rp {s['harga_terakhir']:,.2f}
-            Kondisi Faktor: {s['kondisi_detail']}
-            Berita Terkini:
-            {teks_berita}
-            ---
-            """
+    if not top_3:
+        print("❌ Tidak ada saham yang lolos kriteria harian.")
+        return
 
-    # 4. KONEKSI KE GEMINI AI UNTUK EXECUTIVE REPORT
+    prompt_data = f"PERSPEKTIF TREN TRADING: {args.trend.upper()}\n\n"
+    for s in top_3:
+        ticker_obj = yf.Ticker(s['ticker'])
+        berita_terbaru = ticker_obj.news
+        teks_berita = ""
+        if berita_terbaru:
+            for item in berita_terbaru[:2]:
+                teks_berita += f"- {item.get('title')} ({item.get('publisher')})\n"
+        else:
+            teks_berita = "- Tidak ada berita terbaru harian.\n"
+
+        prompt_data += f"""
+        Ticker: {s['ticker']} | Status Teknikal: {s['status']} (Score {s['skor']}/4)
+        Harga Terakhir: Rp {s['harga_terakhir']:,.2f}
+        Kondisi Faktor: {s['kondisi_detail']}
+        Berita Terkini:
+        {teks_berita}
+        ---
+        """
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("❌ API Key tidak ditemukan.")
+        return
+    client = genai.Client(api_key=api_key)
+
     timeframe_desc = {
         "1hari": "Day Trader kilat (target keluar-masuk 1-2 hari).",
         "1minggu": "Swing Trader jangka pendek (target hold 1 minggu/5 hari bursa).",
@@ -222,7 +173,7 @@ if data_saham:
     }
 
     system_instruction = (
-        f"Anda adalah sistem analis otomatis portofolio saham. Sesuaikan gaya analisis Anda untuk perspektif {timeframe_desc[mode_tren]}\n"
+        f"Anda adalah sistem analis otomatis portofolio saham. Sesuaikan gaya analisis Anda untuk perspektif {timeframe_desc[args.trend]}\n"
         "Tugas Anda memvalidasi data teknikal serta ulasan berita yang dikirimkan untuk menghasilkan keputusan pasar final.\n\n"
         "Format output Anda WAJIB langsung menghasilkan tabel rekapitulasi seperti format markdown berikut tanpa basa-basi kata pengantar:\n\n"
         "### 📊 IDX Stock Report (Top Picks)\n"
@@ -234,17 +185,20 @@ if data_saham:
         "Akhiri dengan 1 baris kalimat disclaimer trading pendek."
     )
 
-    with st.spinner("🤖 [Gemini AI] Sedang memvalidasi tren & menyusun rekomendasi harga..."):
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt_data,
-            config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-        )
-        
-        st.divider()
-        st.subheader("📊 Executive Summary AI (Support, Resist & Target)")
-        st.markdown(response.text)
-        
-elif mode_manual or not mode_manual:
-    if 'data_saham' in locals() and not data_saham and st.status:
-        st.info("💡 Klik tombol di atas untuk memulai pemindaian saham bursa harian.")
+    print("🤖 Mengirimkan ke Gemini AI...")
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt_data,
+        config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+    )
+    
+    print(response.text)
+
+    # Menulis ke Halaman Utama Dasbor GitHub Actions
+    summary_file_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file_path:
+        with open(summary_file_path, "a", encoding="utf-8") as f:
+            f.write("\n" + response.text + "\n")
+
+if __name__ == "__main__":
+    main()
