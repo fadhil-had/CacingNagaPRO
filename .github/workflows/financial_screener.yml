@@ -1,37 +1,55 @@
-name: AI Auto Stock Screener
+name: Automated IDX Stock Screener
 
 on:
-  workflow_dispatch:
-    inputs:
-      saham_manual:
-        description: 'Beri kode saham (pisahkan spasi) untuk mode MANUAL, KOSONGKAN jika ingin mode OTOMATIS.'
-        required: false
-        default: ''
-
   schedule:
-    - cron: '0 10 * * 1-5' # Otomatis jalan jam 17:00 WIB (Senin-Jumat) dalam mode Otomatis
+    # Berjalan otomatis setiap hari Senin - Jumat jam 09:00 UTC (16:00 WIB) setelah bursa tutup
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch:
+    # Mengaktifkan tombol untuk menjalankan workflow secara manual dari GitHub UI
+    inputs:
+      trend_mode:
+        description: 'Pilih rentang waktu tren trading'
+        required: true
+        default: '1minggu'
+        type: choice
+        options:
+          - 1hari
+          - 1minggu
+          - 1bulan
 
 jobs:
-  run-screener:
+  screen-stocks:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Check out repository code
+    - name: Checkout Repository
       uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.10' # Diperbaiki dari 'python-node-version' ke 'python-version'
         cache: 'pip'
 
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance google-genai pandas
+        pip install yfinance pandas openpyxl google-genai numpy
 
-    - name: Run Screener Script
+    - name: Run Stock Screener (Scheduled)
+      if: github.event_name == 'schedule'
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
       run: |
-        # Diperbarui: Menjalankan skrip dari path .github/scripts/
-        python .github/scripts/bot_financial_screener.py ${{ github.event.inputs.saham_manual }}
+        # Menggunakan path folder scripts/ yang baru
+        python scripts/financial_screener.py --trend 1minggu
+
+    - name: Run Stock Screener (Manual Trigger)
+      if: github.event_name == 'workflow_dispatch'
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
+      run: |
+        # Menggunakan opsi rentang waktu sesuai input user
+        python scripts/financial_screener.py --trend ${{ github.event.inputs.trend_mode }}
