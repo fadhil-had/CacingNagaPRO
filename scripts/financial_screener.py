@@ -86,7 +86,8 @@ def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
             skor += 1
             kondisi_teks.append(f"✅ Momentum (40 <= RSI:{hari_ini['RSI']:.1f} <= 65)")
         else:
-            kondisi_teks.append(f"❌ Momentum")
+            # Sempurnakan teks di bawah ini agar mencetak angka RSI-nya saat tidak lolos
+            kondisi_teks.append(f"❌ Momentum (RSI:{hari_ini['RSI']:.1f} di luar range 40-65)")
 
         # Faktor 3: Convergence (MACD)
         if hari_ini['MACD'] > hari_ini['Signal_Line'] and hari_ini['Histogram'] > 0:
