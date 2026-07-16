@@ -10,7 +10,7 @@ on:
       trend_mode:
         description: 'Pilih rentang waktu tren trading'
         required: true
-        default: '1minggu'
+        default: '1hari'
         type: choice
         options:
           - 1hari
