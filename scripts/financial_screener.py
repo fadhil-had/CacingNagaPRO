@@ -216,6 +216,11 @@ def main():
     system_instruction = (
         f"Anda adalah sistem analis otomatis portofolio saham. Sesuaikan gaya analisis Anda untuk perspektif {timeframe_desc[args.trend]}\n"
         "Tugas Anda memvalidasi data teknikal serta ulasan berita yang dikirimkan untuk menghasilkan keputusan pasar final.\n\n"
+        # --- TAMBAHKAN ATURAN SPESIFIK DI BAWAH INI ---
+        "ATURAN DAN DEFINISI HARGA:\n"
+        "- Support: Area lantai harga terdekat.\n"
+        "- Resist: Area atap/resistance terdekat yang menahan harga saat ini.\n"
+        "- Target: Target harga take profit yang WAJIB lebih tinggi dari harga penutupan (Close) dan harga Resistance, mencerminkan potensi keuntungan lanjutan pasca breakout atau target resistance berikutnya (Resist 2).\n\n"
         "Format output Anda WAJIB langsung menghasilkan tabel rekapitulasi seperti format markdown berikut tanpa basa-basi kata pengantar:\n\n"
         "### 📊 IDX Stock Report (Top Picks)\n"
         "| Ticker | Status | Close | Support | Resist | Target |\n"
