@@ -34,7 +34,7 @@ def ambil_semua_ticker_dari_excel(file_path="resource/daftar-saham.xlsx"):
         return []
 
 def siapkan_data_untuk_timeframe(df_saham, mode_tren):
-    """Mengubah data harian menjadi weekly/monthly candle lalu menghitung indikator teknikal."""
+    """Mengubah data harian menjadi weekly/monthly candle lalu menghitung indikator teknikal inti."""
     required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
     df = df_saham.dropna(subset=required_cols).copy()
     if df.empty:
@@ -64,36 +64,20 @@ def siapkan_data_untuk_timeframe(df_saham, mode_tren):
     if len(timeframe_df) < min_rows:
         raise ValueError("Data tidak cukup untuk indikator")
 
-    # --- 1. HITUNG INDIKATOR UTAMA ---
     timeframe_df['EMA20'] = timeframe_df['Close'].ewm(span=20, adjust=False).mean()
     timeframe_df['EMA50'] = timeframe_df['Close'].ewm(span=50, adjust=False).mean()
     timeframe_df['EMA200'] = timeframe_df['Close'].ewm(span=200, adjust=False).mean()
     timeframe_df['RSI'] = hitung_rsi(timeframe_df['Close'], period=14)
 
-    # MACD
     ema12 = timeframe_df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = timeframe_df['Close'].ewm(span=26, adjust=False).mean()
     timeframe_df['MACD'] = ema12 - ema26
     timeframe_df['Signal_Line'] = timeframe_df['MACD'].ewm(span=9, adjust=False).mean()
     timeframe_df['Histogram'] = timeframe_df['MACD'] - timeframe_df['Signal_Line']
 
-    # Volume
     timeframe_df['Vol_MA20'] = timeframe_df['Volume'].rolling(window=20).mean()
+    timeframe_df['Vol_MA50'] = timeframe_df['Volume'].rolling(window=50).mean()
 
-    # Bollinger Bands (20, 2)
-    timeframe_df['BB_Mid'] = timeframe_df['Close'].rolling(window=20).mean()
-    timeframe_df['BB_Std'] = timeframe_df['Close'].rolling(window=20).std()
-    timeframe_df['BB_Upper'] = timeframe_df['BB_Mid'] + (2 * timeframe_df['BB_Std'])
-    timeframe_df['BB_Lower'] = timeframe_df['BB_Mid'] - (2 * timeframe_df['BB_Std'])
-
-    # ATR (14)
-    high_low = timeframe_df['High'] - timeframe_df['Low']
-    high_close = (timeframe_df['High'] - timeframe_df['Close'].shift(1)).abs()
-    low_close = (timeframe_df['Low'] - timeframe_df['Close'].shift(1)).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    timeframe_df['ATR14'] = tr.rolling(window=14).mean()
-
-    # Slow Stochastic (14, 3, 3)
     low_14 = timeframe_df['Low'].rolling(window=14).min()
     high_14 = timeframe_df['High'].rolling(window=14).max()
     timeframe_df['Fast_K'] = 100 * ((timeframe_df['Close'] - low_14) / (high_14 - low_14).replace(0, np.nan))
@@ -101,7 +85,6 @@ def siapkan_data_untuk_timeframe(df_saham, mode_tren):
     timeframe_df['Slow_K'] = timeframe_df['Fast_K'].rolling(window=3).mean()
     timeframe_df['Slow_D'] = timeframe_df['Slow_K'].rolling(window=3).mean()
 
-    # Breakout confirmation
     timeframe_df['Prev_High_20'] = timeframe_df['High'].rolling(window=20).max().shift(1)
     timeframe_df['Prev_Low_20'] = timeframe_df['Low'].rolling(window=20).min().shift(1)
 
@@ -118,121 +101,90 @@ def analisa_saham_confluence(ticker_code, df_saham, mode_tren):
         prev2 = df.iloc[-3]
         prev3 = df.iloc[-4]
 
-        # --- 2. EVALUASI FAKTOR CONFLUENCE ---
-        skor = 0
         total_faktor = 4
         kondisi_teks = []
 
         # Faktor 1: Trend
         if mode_tren == "1hari":
-            f1_cond = (
+            trend_ok = (
                 (hari_ini['Close'] > hari_ini['EMA20']) and
                 (hari_ini['EMA20'] > hari_ini['EMA50']) and
-                (hari_ini['EMA50'] > hari_ini['EMA200']) and
-                (hari_ini['Close'] > kemarin['Close'])
+                (hari_ini['EMA50'] > hari_ini['EMA200'])
             )
-            label_f1 = "Close > EMA20 > EMA50 > EMA200 dan candle naik"
+            label_f1 = "Close > EMA20 > EMA50 > EMA200"
         elif mode_tren == "1minggu":
-            f1_cond = (hari_ini['Close'] > hari_ini['EMA50']) and (hari_ini['EMA50'] > hari_ini['EMA200'])
-            label_f1 = "Close > EMA50 AND EMA50 > EMA200"
-        else:  # 1bulan
-            f1_cond = (hari_ini['Close'] > hari_ini['EMA200'])
+            trend_ok = (hari_ini['Close'] > hari_ini['EMA50']) and (hari_ini['EMA50'] > hari_ini['EMA200'])
+            label_f1 = "Close > EMA50 > EMA200"
+        else:
+            trend_ok = hari_ini['Close'] > hari_ini['EMA200']
             label_f1 = "Close > EMA200"
 
-        if f1_cond:
-            skor += 1
-            kondisi_teks.append(f"✅ Trend ({label_f1})")
-        else:
-            kondisi_teks.append(f"❌ Trend ({label_f1})")
+        kondisi_teks.append(f"✅ Trend ({label_f1})" if trend_ok else f"❌ Trend ({label_f1})")
 
-        # Faktor 2: Momentum (RSI & Stochastic)
+        # Faktor 2: Momentum (RSI)
         if mode_tren == "1hari":
-            rsi_ok = 58 <= hari_ini['RSI'] <= 72
-            stoch_ok = (hari_ini['Slow_K'] > hari_ini['Slow_D']) and (hari_ini['Slow_K'] >= 60)
-            if rsi_ok and stoch_ok:
-                skor += 1
-                kondisi_teks.append(f"✅ Momentum (RSI:{hari_ini['RSI']:.1f} & Stoch:{hari_ini['Slow_K']:.1f} bullish)")
-            else:
-                kondisi_teks.append(f"❌ Momentum (RSI:{hari_ini['RSI']:.1f}, Stoch:{hari_ini['Slow_K']:.1f})")
-        elif mode_tren == "1minggu":
-            stoch_bullish = (hari_ini['Slow_K'] > hari_ini['Slow_D'])
-            stoch_aman = (hari_ini['Slow_K'] <= 45)
-            if (45 <= hari_ini['RSI'] <= 60) and stoch_bullish and stoch_aman:
-                skor += 1
-                kondisi_teks.append(f"✅ Momentum (RSI:{hari_ini['RSI']:.1f} & Stochastic Bullish di Area Bawah)")
-            else:
-                kondisi_teks.append("❌ Momentum (Gagal kombinasi RSI/Stochastic Accumulation)")
+            momentum_ok = 40 <= hari_ini['RSI'] <= 85
+            momentum_label = f"RSI:{hari_ini['RSI']:.1f}"
         else:
-            stoch_bullish = (hari_ini['Slow_K'] > hari_ini['Slow_D'])
-            stoch_aman = (hari_ini['Slow_K'] <= 40)
-            if (45 <= hari_ini['RSI'] <= 60) and stoch_bullish and stoch_aman:
-                skor += 1
-                kondisi_teks.append(f"✅ Momentum (45 <= RSI:{hari_ini['RSI']:.1f} <= 60 & Stoch Bullish)")
-            else:
-                kondisi_teks.append(f"❌ Momentum (RSI:{hari_ini['RSI']:.1f} di luar range 45-60)")
+            momentum_ok = 40 <= hari_ini['RSI'] <= 65
+            momentum_label = f"RSI:{hari_ini['RSI']:.1f}"
+
+        kondisi_teks.append(
+            f"✅ Momentum ({momentum_label})" if momentum_ok else f"❌ Momentum ({momentum_label})"
+        )
 
         # Faktor 3: Convergence (MACD)
-        if hari_ini['MACD'] > hari_ini['Signal_Line'] and hari_ini['Histogram'] > kemarin['Histogram']:
-            skor += 1
-            kondisi_teks.append("✅ Convergence (MACD > Signal & Histogram Akselerasi)")
-        else:
-            kondisi_teks.append("❌ Convergence (Momentum MACD melemah/bearish)")
+        convergence_ok = (hari_ini['MACD'] > hari_ini['Signal_Line']) and (hari_ini['Histogram'] > 0)
+        kondisi_teks.append(
+            "✅ Convergence (MACD > Signal & Histogram > 0)" if convergence_ok else "❌ Convergence (MACD tidak bullish)"
+        )
 
         # Faktor 4: Volume
         lonjakan_vol = hari_ini['Volume'] / hari_ini['Vol_MA20'] if hari_ini['Vol_MA20'] > 0 else 0
-        if mode_tren == "1hari":
-            vol_ok = lonjakan_vol > 2.2 and hari_ini['Volume'] > kemarin['Volume']
-        elif mode_tren == "1minggu":
-            vol_ok = lonjakan_vol > 2.0
-        else:
-            vol_ok = lonjakan_vol > 2.2
-        if vol_ok:
-            skor += 1
-            kondisi_teks.append(f"✅ Volume (Lonjakan: {lonjakan_vol:.2f}x)")
-        else:
-            kondisi_teks.append("❌ Volume")
+        volume_ok = lonjakan_vol > 1.5
+        kondisi_teks.append(
+            f"✅ Volume (Lonjakan: {lonjakan_vol:.2f}x)" if volume_ok else f"❌ Volume (Lonjakan: {lonjakan_vol:.2f}x)"
+        )
 
-        # Faktor 5: Khusus 1hari (Breakout terkonfirmasi)
+        # Breakout validation for daily
+        breakout_ok = True
+        prev_high_20 = float(hari_ini['Prev_High_20']) if not pd.isna(hari_ini['Prev_High_20']) else None
         if mode_tren == "1hari":
-            total_faktor = 6
-            close_above_prev_high = hari_ini['Close'] > hari_ini['Prev_High_20']
-            close_above_ema20 = hari_ini['Close'] > hari_ini['EMA20']
-            close_up_3_candle = (hari_ini['Close'] > kemarin['Close']) and (kemarin['Close'] > prev2['Close']) and (prev2['Close'] > prev3['Close'])
-            body_strength = ((hari_ini['Close'] - hari_ini['Open']) / max(hari_ini['High'] - hari_ini['Low'], 1e-6)) > 0.6
-            if close_above_prev_high and close_above_ema20 and close_up_3_candle and body_strength:
-                skor += 1
-                kondisi_teks.append("✅ Breakout (Close di atas high 20-bar, EMA20, dan 3 candle naik)")
+            if prev_high_20 is None:
+                kondisi_teks.append("⚠️ Breakout validation tidak tersedia (Prev_High_20 kosong)")
             else:
-                kondisi_teks.append("❌ Breakout (Belum terkonfirmasi)")
+                breakout_ok = hari_ini['Close'] > prev_high_20
+                kondisi_teks.append(
+                    "✅ Breakout terkonfirmasi (Close > Prev_High_20)"
+                    if breakout_ok
+                    else "❌ Breakout tidak terkonfirmasi (Close belum di atas Prev_High_20)"
+                )
 
-        # Faktor 6: Khusus 1hari (Volatility & support-resistance sanity check)
-        if mode_tren == "1hari":
-            atr_ok = hari_ini['ATR14'] > 0 and (hari_ini['Close'] - hari_ini['BB_Lower']) > (0.7 * hari_ini['ATR14'])
-            if atr_ok:
-                skor += 1
-                kondisi_teks.append("✅ Volatilitas (Breakout cukup kuat & tidak tipis)")
-            else:
-                kondisi_teks.append("❌ Volatilitas (Breakout terlalu tipis)")
+        skor = int(trend_ok) + int(momentum_ok) + int(convergence_ok) + int(volume_ok)
 
         support_level = float(df['Low'].rolling(window=10).min().iloc[-1])
         resistance_level = float(df['High'].rolling(window=10).max().iloc[-1])
         target_price = max(float(hari_ini['Close']) * 1.06, resistance_level * 1.02)
+        entry_level = min(float(hari_ini['Close']) * 1.01, resistance_level * 0.99)
+        stop_level = support_level * 0.98
         risk_note = (
             "Risiko: breakout bisa gagal jika harga kembali di bawah support terdekat; "
-            "keluar posisi saat price action melemah atau volume menurun."
+            "cut loss jika harga menembus support dengan volume yang meningkat."
         )
 
-        strong_buy_threshold = 6 if mode_tren == "1hari" else 4
+        strong_buy = (skor >= 3 and (breakout_ok or prev_high_20 is None)) if mode_tren == "1hari" else skor == total_faktor
         return {
             "ticker": ticker_code,
             "harga_terakhir": hari_ini['Close'],
             "support_level": support_level,
             "resistance_level": resistance_level,
+            "entry_level": entry_level,
+            "stop_level": stop_level,
             "target_price": target_price,
             "risk_note": risk_note,
             "skor": skor,
             "total_faktor": total_faktor,
-            "status": "Strong Buy" if skor >= strong_buy_threshold else "Watchlist",
+            "status": "Strong Buy" if strong_buy else "Watchlist",
             "kondisi_detail": ", ".join(kondisi_teks),
             "lonjakan_volume": lonjakan_vol,
             "error": False
@@ -252,18 +204,19 @@ def main():
     print(f"📥 Mengunduh data historis massal untuk {len(pool)} saham...")
     data_massal = yf.download(pool, period="5y", interval="1d", group_by='ticker', progress=False, threads=True)
     
-    saham_lolos = []
+    candidates = []
     for t in pool:
         if t in data_massal and not data_massal[t].empty:
             res = analisa_saham_confluence(t, data_massal[t], args.trend)
-            if not res["error"] and res["status"] == "Strong Buy":
-                saham_lolos.append(res)
-                
-    top_3 = sorted(saham_lolos, key=lambda x: (x["skor"]/x["total_faktor"], x["lonjakan_volume"]), reverse=True)[:3]
+            if not res["error"]:
+                candidates.append(res)
+
+    strong_buy_candidates = [c for c in candidates if c["status"] == "Strong Buy"]
+    top_3 = sorted(strong_buy_candidates, key=lambda x: (x["skor"]/x["total_faktor"], x["lonjakan_volume"]), reverse=True)[:3]
 
     if not top_3:
-        print(f"❌ Tidak ada saham yang lolos kriteria {args.trend}.")
-        return
+        top_3 = sorted(candidates, key=lambda x: (x["skor"]/x["total_faktor"], x["lonjakan_volume"]), reverse=True)[:3]
+        print(f"⚠️ Tidak ada Strong Buy untuk {args.trend}; menampilkan kandidat Watchlist terbaik.")
 
     prompt_data = f"PERSPEKTIF TREN TRADING: {args.trend.upper()}\n\n"
     for s in top_3:

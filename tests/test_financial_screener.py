@@ -60,6 +60,22 @@ class TestTimeframePreparation(unittest.TestCase):
         self.assertGreater(result["target_price"], result["resistance_level"])
         self.assertIn("Risiko", result["risk_note"])
 
+    def test_daily_analysis_can_return_strong_buy_for_bullish_setup(self):
+        idx = pd.date_range("2024-01-01", periods=140, freq="D")
+        close = 100 + np.linspace(0, 8, len(idx))
+        close[-14:] += np.array([0.2, -0.3, 0.4, -0.1, 0.5, -0.2, 0.3, 0.0, 0.6, -0.4, 0.7, -0.1, 0.2, 0.4])
+        close[-1] = 110.0
+        open_ = close - 0.25
+        high = close + 0.8
+        low = close - 0.8
+        volume = np.full(len(idx), 1200)
+        volume[-5:] = np.array([1800, 2200, 2600, 3000, 3200])
+        df = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume}, index=idx)
+
+        result = analisa_saham_confluence("TEST.JK", df, "1hari")
+
+        self.assertEqual(result["status"], "Strong Buy")
+
 
 if __name__ == "__main__":
     unittest.main()
