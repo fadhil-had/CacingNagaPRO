@@ -2,7 +2,7 @@ name: Automated IDX Stock Screener
 
 on:
   schedule:
-    # Berjalan otomatis setiap hari Senin - Jumat jam 09:00 UTC (16:00 WIB) setelah bursa tutup
+    # Berjalan otomatis setiap hari kerja jam 09:00 UTC (16:00 WIB) setelah bursa tutup
     - cron: '0 9 * * 1-5'
   workflow_dispatch:
     # Mengaktifkan tombol untuk menjalankan workflow secara manual dari GitHub UI
@@ -42,8 +42,8 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
       run: |
-        # Menggunakan path folder scripts/ yang baru
-        python scripts/financial_screener.py --trend 1minggu
+        # Menggunakan mode daily untuk run harian yang lebih presisi
+        python scripts/financial_screener.py --trend 1hari
 
     - name: Run Stock Screener (Manual Trigger)
       if: github.event_name == 'workflow_dispatch'
