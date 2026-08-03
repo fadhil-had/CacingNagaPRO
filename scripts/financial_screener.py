@@ -510,12 +510,30 @@ def main():
     )
 
     print("🤖 Mengirimkan ke Gemini AI...")
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt_data,
-        config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-    )
-    
+    max_retries = 5
+    retry_delays = [10, 30, 60, 120, 180]  # detik antar retry (backoff bertahap)
+    response = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt_data,
+                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+            )
+            break  # sukses, keluar dari loop
+        except Exception as e:
+            err_str = str(e)
+            is_retryable = any(code in err_str for code in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"])
+            if is_retryable and attempt < max_retries:
+                wait = retry_delays[attempt - 1]
+                print(f"⚠️ Gemini API error (attempt {attempt}/{max_retries}): {err_str[:120]}")
+                print(f"   Menunggu {wait}s sebelum retry...")
+                import time
+                time.sleep(wait)
+            else:
+                print(f"❌ Gemini API gagal setelah {attempt} percobaan: {err_str}")
+                raise
+
     print(response.text)
 
     summary_file_path = os.environ.get("GITHUB_STEP_SUMMARY")
