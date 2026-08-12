@@ -323,6 +323,12 @@ def main():
             config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
         )
         print(response.text)
+
+        summary_file_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file_path and response.text:
+            with open(summary_file_path, "a", encoding="utf-8") as f:
+                f.write("\n" + response.text + "\n")
+        
     except Exception as e:
         print(f"❌ Gemini API gagal: {str(e)}")
 
