@@ -1,5 +1,5 @@
-yfinance
-google-genai
+yfinance[repair]
 pandas
-openpyxl
 numpy
+openpyxl
+google-genai

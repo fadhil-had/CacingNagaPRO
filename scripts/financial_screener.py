@@ -1,5 +1,7 @@
 import os
 import math
+import time
+import random
 import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,7 +22,8 @@ IDX_BENCHMARK = "^JKSE"
 IDX_TZ = ZoneInfo("Asia/Jakarta")
 LOT_SIZE = 100
 
-# Penentuan threshold - Pake AI kemaren nyari threshold nya wkwk
+# Threshold ini adalah heuristic awal, BUKAN aturan resmi BEI.
+# Tuning kembali menggunakan backtest pada universe saham Anda.
 TIMEFRAME_CONFIG = {
     "1hari": {
         "min_rows": 260,
@@ -183,6 +186,136 @@ def ekstrak_ticker_frame(data_massal: pd.DataFrame, ticker: str) -> pd.DataFrame
         return df
     except Exception:
         return pd.DataFrame()
+
+
+def normalisasi_single_download(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        if IDX_BENCHMARK in out.columns.get_level_values(0):
+            out = out[IDX_BENCHMARK].copy()
+        elif IDX_BENCHMARK in out.columns.get_level_values(1):
+            out = out.xs(IDX_BENCHMARK, axis=1, level=1).copy()
+        else:
+            out.columns = out.columns.get_level_values(0)
+
+    out.columns = [str(c).title() for c in out.columns]
+    needed = ["Open", "High", "Low", "Close", "Volume"]
+    if not all(c in out.columns for c in needed):
+        return pd.DataFrame()
+    return out
+
+
+def download_ihsg(period: str) -> pd.DataFrame:
+    print("📥 Unduh data IHSG secara terpisah...")
+    try:
+        df = yf.download(
+            IDX_BENCHMARK,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            repair=True,
+            progress=False,
+            threads=False,
+        )
+    except Exception as e:
+        print(f"❌ Download IHSG gagal: {e}")
+        return pd.DataFrame()
+
+    df = normalisasi_single_download(df)
+    if df.empty:
+        print("❌ Data IHSG (^JKSE) tidak tersedia.")
+        return pd.DataFrame()
+
+    print(f"✅ IHSG tersedia: {len(df)} bar")
+    return df
+
+
+def download_saham_batch(pool: list[str], period: str, batch_size: int = 100):
+    frames = {}
+    failed = []
+    total = len(pool)
+
+    print(f"📥 Unduh {period} data {total} saham IDX...")
+
+    for start in range(0, total, batch_size):
+        batch = pool[start:start + batch_size]
+        end = min(start + batch_size, total)
+
+        try:
+            data = yf.download(
+                batch,
+                period=period,
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=True,
+                repair=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception as e:
+            print(f"⚠️ Batch {start + 1}-{end} gagal: {e}")
+            failed.extend(batch)
+            continue
+
+        for ticker in batch:
+            df = ekstrak_ticker_frame(data, ticker)
+            if df.empty:
+                failed.append(ticker)
+            else:
+                frames[ticker] = df
+
+        print(f"   ✅ {end}/{total} ticker diproses")
+
+    failed = sorted(set(failed))
+    if failed:
+        preview = ", ".join(failed[:15])
+        suffix = "..." if len(failed) > 15 else ""
+        print(f"⚠️ {len(failed)} ticker tanpa data: {preview}{suffix}")
+
+    print(f"✅ Data saham tersedia: {len(frames)}/{total}")
+    return frames
+
+
+def hitung_market_breadth_from_frames(frames: dict[str, pd.DataFrame], pool: list[str]):
+    above50 = 0
+    above200 = 0
+    valid50 = 0
+    valid200 = 0
+    returns20 = []
+
+    for ticker in pool:
+        df = frames.get(ticker)
+        if df is None or df.empty:
+            continue
+
+        df = buang_daily_candle_belum_selesai(df).dropna(subset=["Close"])
+        if len(df) < 60:
+            continue
+
+        close = df["Close"]
+        ema50 = close.ewm(span=50, adjust=False).mean()
+        valid50 += 1
+        if close.iloc[-1] > ema50.iloc[-1]:
+            above50 += 1
+
+        if len(df) >= 220:
+            ema200 = close.ewm(span=200, adjust=False).mean()
+            valid200 += 1
+            if close.iloc[-1] > ema200.iloc[-1]:
+                above200 += 1
+
+        if len(close) >= 21 and close.iloc[-21] > 0:
+            returns20.append(close.iloc[-1] / close.iloc[-21] - 1)
+
+    return {
+        "breadth50": above50 / valid50 if valid50 else np.nan,
+        "breadth200": above200 / valid200 if valid200 else np.nan,
+        "median_return20": float(np.median(returns20)) if returns20 else np.nan,
+        "jumlah_saham_breadth": valid50,
+    }
 
 
 def buang_daily_candle_belum_selesai(df: pd.DataFrame) -> pd.DataFrame:
@@ -927,21 +1060,63 @@ def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report)
         "Akhiri disclaimer satu kalimat."
     )
 
-    try:
-        client = genai.Client(api_key=api_key)
-        model = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
-        response = client.models.generate_content(
-            model=model,
-            contents="\n".join(prompt),
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-            ),
-        )
-        return response.text or fallback_report
-    except Exception as e:
-        print(f"⚠️ Gemini API gagal ({e}); memakai report deterministik.")
-        return fallback_report
+    client = genai.Client(api_key=api_key)
 
+    # GEMINI_MODEL tetap bisa dipakai untuk override dari GitHub Secret/Env.
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+    # Fallback model hanya dipakai bila primary gagal setelah retry.
+    models = [primary_model]
+    if primary_model != "gemini-3.1-flash-lite":
+        models.append("gemini-3.1-flash-lite")
+
+    max_attempts_per_model = 3
+    retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")
+
+    for model_index, model in enumerate(models):
+        print(f"🤖 Gemini report model: {model}")
+
+        for attempt in range(max_attempts_per_model):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents="\n".join(prompt),
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                    ),
+                )
+
+                if response.text:
+                    return response.text
+
+                print(f"⚠️ {model} mengembalikan response kosong.")
+                break
+
+            except Exception as e:
+                error_text = str(e)
+                is_retryable = any(code in error_text for code in retryable_codes)
+
+                if is_retryable and attempt < max_attempts_per_model - 1:
+                    delay = (2 ** attempt) + random.uniform(0.0, 1.0)
+                    print(
+                        f"⚠️ {model} sementara gagal "
+                        f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                    )
+                    print(f"⏳ Retry dalam {delay:.1f} detik...")
+                    time.sleep(delay)
+                    continue
+
+                print(
+                    f"⚠️ {model} gagal "
+                    f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                )
+                break
+
+        if model_index < len(models) - 1:
+            print(f"🔁 Pindah ke fallback model: {models[model_index + 1]}")
+
+    print("ℹ️ Semua model Gemini gagal; memakai report deterministik.")
+    return fallback_report
 
 def simpan_csv(candidates: list[dict], path: str):
     if not path:
@@ -981,22 +1156,13 @@ def main():
     parser.add_argument("--trend", choices=["1hari", "1minggu", "1bulan"], default="1hari")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
     parser.add_argument("--period", default="10y", choices=["5y", "10y", "max"])
-    parser.add_argument(
-        "--min-turnover",
-        type=float,
-        default=1_000_000_000,
-        help="Median turnover harian minimum 20D dalam rupiah (default Rp1 miliar)",
-    )
-    parser.add_argument(
-        "--min-price",
-        type=float,
-        default=100,
-        help="Harga minimum heuristic scanner (default Rp100, bukan aturan BEI)",
-    )
-    parser.add_argument("--capital", type=float, default=0, help="Modal untuk position sizing, opsional")
-    parser.add_argument("--risk-pct", type=float, default=1.0, help="Risk per trade dalam persen modal")
-    parser.add_argument("--max-position-pct", type=float, default=20.0, help="Maksimum nilai satu posisi terhadap modal")
+    parser.add_argument("--min-turnover", type=float, default=1_000_000_000)
+    parser.add_argument("--min-price", type=float, default=100)
+    parser.add_argument("--capital", type=float, default=0)
+    parser.add_argument("--risk-pct", type=float, default=1.0)
+    parser.add_argument("--max-position-pct", type=float, default=20.0)
     parser.add_argument("--top", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
     args = parser.parse_args()
 
@@ -1004,31 +1170,22 @@ def main():
     if not pool:
         return
 
-    download_tickers = list(dict.fromkeys(pool + [IDX_BENCHMARK]))
-    print(f"📥 Unduh {args.period} data: {len(pool)} saham IDX + IHSG | Mode {args.trend}...")
-
-    try:
-        data_massal = yf.download(
-            download_tickers,
-            period=args.period,
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=True,
-            repair=True,
-            progress=False,
-            threads=True,
-        )
-    except Exception as e:
-        print(f"❌ Download yfinance gagal: {e}")
+    ihsg_daily = download_ihsg(args.period)
+    if ihsg_daily.empty:
+        print("❌ Scanner dihentikan karena market regime tidak bisa dihitung tanpa IHSG.")
         return
 
-    ihsg_daily = ekstrak_ticker_frame(data_massal, IDX_BENCHMARK)
-    if ihsg_daily.empty:
-        print("❌ Data IHSG (^JKSE) tidak tersedia. Scanner dihentikan karena market regime tidak bisa dihitung.")
+    stock_frames = download_saham_batch(
+        pool,
+        args.period,
+        max(1, args.batch_size),
+    )
+    if not stock_frames:
+        print("❌ Tidak ada data saham yang berhasil diunduh.")
         return
 
     print("🌏 Menghitung market breadth dan regime IHSG...")
-    breadth = hitung_market_breadth(data_massal, pool)
+    breadth = hitung_market_breadth_from_frames(stock_frames, pool)
 
     try:
         ihsg_tf = siapkan_data_untuk_timeframe(ihsg_daily, args.trend)
@@ -1048,8 +1205,8 @@ def main():
     errors = []
 
     for ticker in pool:
-        df_saham = ekstrak_ticker_frame(data_massal, ticker)
-        if df_saham.empty:
+        df_saham = stock_frames.get(ticker)
+        if df_saham is None or df_saham.empty:
             continue
 
         res = analisa_saham_confluence(
@@ -1060,6 +1217,7 @@ def main():
             args.min_turnover,
             args.min_price,
         )
+
         if res.get("error"):
             errors.append(res)
         else:
@@ -1073,13 +1231,17 @@ def main():
 
     for c in candidates:
         c["position_size"] = hitung_position_size(
-            c, args.capital, args.risk_pct, args.max_position_pct
+            c,
+            args.capital,
+            args.risk_pct,
+            args.max_position_pct,
         )
 
     simpan_csv(candidates, args.output_csv)
 
     top_picks, pick_type = ranking_candidates(candidates, args.top)
     status_counts = pd.Series([c["status"] for c in candidates]).value_counts().to_dict()
+
     print(
         "📈 Hasil universe: "
         f"Strong Buy={status_counts.get('Strong Buy', 0)}, "
@@ -1093,10 +1255,20 @@ def main():
         return
 
     if pick_type == "Watchlist":
-        print("⚠️ Tidak ada Strong Buy yang lolos; menampilkan Watchlist terbaik yang tetap lolos hard filter.")
+        print("⚠️ Tidak ada Strong Buy yang lolos; menampilkan Watchlist terbaik.")
 
-    fallback_report = deterministic_report(top_picks, args.trend, market_regime, args.capital)
-    report = generate_gemini_report(top_picks, args.trend, market_regime, fallback_report)
+    fallback_report = deterministic_report(
+        top_picks,
+        args.trend,
+        market_regime,
+        args.capital,
+    )
+    report = generate_gemini_report(
+        top_picks,
+        args.trend,
+        market_regime,
+        fallback_report,
+    )
     print("\n" + report)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -1109,6 +1281,7 @@ def main():
             print(f"⚠️ Gagal menulis GITHUB_STEP_SUMMARY: {e}")
 
     print(f"\n📄 Full screening CSV: {args.output_csv}")
+
     if errors:
         print(f"ℹ️ {len(errors)} ticker dilewati karena data/indikator tidak cukup.")
 
