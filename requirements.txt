@@ -1,3 +1,5 @@
 yfinance
 google-genai
 pandas
+openpyxl
+numpy
