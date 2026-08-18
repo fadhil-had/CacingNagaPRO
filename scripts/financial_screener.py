@@ -1,6 +1,8 @@
 import os
 import math
 import argparse
+import logging
+import time
 from io import StringIO
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,6 +11,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import requests
+
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 try:
     from google import genai
@@ -284,6 +288,77 @@ def ekstrak_ticker_frame(data_massal: pd.DataFrame, ticker: str) -> pd.DataFrame
         return df
     except Exception:
         return pd.DataFrame()
+
+
+def download_benchmark_yahoo(period: str, retries: int = 2) -> pd.DataFrame:
+    for attempt in range(retries + 1):
+        try:
+            raw = yf.download(
+                IDX_BENCHMARK,
+                period=period,
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=True,
+                repair=False,
+                progress=False,
+                threads=False,
+            )
+            df = ekstrak_ticker_frame(raw, IDX_BENCHMARK)
+            if not df.empty and df["Close"].dropna().size >= 50:
+                return df
+        except Exception:
+            pass
+        if attempt < retries:
+            time.sleep(1.5 * (attempt + 1))
+    return pd.DataFrame()
+
+
+def download_saham_yahoo(pool: list[str], period: str, batch_size: int = 100, retries: int = 1):
+    frames = {}
+    failed = []
+
+    for start in range(0, len(pool), batch_size):
+        batch = pool[start:start + batch_size]
+        pending = list(batch)
+
+        for attempt in range(retries + 1):
+            if not pending:
+                break
+            try:
+                raw = yf.download(
+                    pending,
+                    period=period,
+                    interval="1d",
+                    group_by="ticker",
+                    auto_adjust=True,
+                    repair=False,
+                    progress=False,
+                    threads=True,
+                )
+            except Exception:
+                raw = pd.DataFrame()
+
+            still_missing = []
+            for ticker in pending:
+                df = ekstrak_ticker_frame(raw, ticker)
+                if not df.empty and df["Close"].dropna().size >= 20:
+                    frames[ticker] = df
+                else:
+                    still_missing.append(ticker)
+
+            pending = still_missing
+            if pending and attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+
+        failed.extend(pending)
+        done = min(start + batch_size, len(pool))
+        print(f"   Yahoo: {done}/{len(pool)} ticker diproses")
+
+    if not frames:
+        return pd.DataFrame(), failed
+
+    data = pd.concat(frames, axis=1).sort_index()
+    return data, failed
 
 
 def buang_daily_candle_belum_selesai(df: pd.DataFrame) -> pd.DataFrame:
@@ -1085,6 +1160,8 @@ def main():
     parser.add_argument("--max-position-pct", type=float, default=20.0, help="Maksimum nilai satu posisi terhadap modal")
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
+    parser.add_argument("--yf-batch-size", type=int, default=100)
+    parser.add_argument("--yf-retries", type=int, default=1)
     args = parser.parse_args()
 
     pool = ambil_semua_ticker(
@@ -1096,28 +1173,30 @@ def main():
     if not pool:
         return
 
-    download_tickers = list(dict.fromkeys(pool + [IDX_BENCHMARK]))
-    print(f"📥 Unduh {args.period} data: {len(pool)} saham IDX + IHSG | Mode {args.trend}...")
+    print(f"📥 Unduh {args.period} data: IHSG + {len(pool)} saham IDX | Mode {args.trend}...")
 
-    try:
-        data_massal = yf.download(
-            download_tickers,
-            period=args.period,
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=True,
-            repair=True,
-            progress=False,
-            threads=True,
-        )
-    except Exception as e:
-        print(f"❌ Download yfinance gagal: {e}")
-        return
-
-    ihsg_daily = ekstrak_ticker_frame(data_massal, IDX_BENCHMARK)
+    ihsg_daily = download_benchmark_yahoo(args.period, retries=args.yf_retries)
     if ihsg_daily.empty:
-        print("❌ Data IHSG (^JKSE) tidak tersedia. Scanner dihentikan karena market regime tidak bisa dihitung.")
+        print("❌ ^JKSE gagal diunduh dari Yahoo Finance. Coba ulang beberapa saat lagi.")
         return
+
+    data_massal, failed_tickers = download_saham_yahoo(
+        pool,
+        args.period,
+        batch_size=args.yf_batch_size,
+        retries=args.yf_retries,
+    )
+    if data_massal.empty:
+        print("❌ Tidak ada data saham yang berhasil diunduh dari Yahoo Finance.")
+        return
+
+
+    valid_count = len(pool) - len(failed_tickers)
+    print(f"✅ Yahoo Finance: {valid_count}/{len(pool)} saham tersedia")
+    if failed_tickers:
+        preview = ", ".join(failed_tickers[:20])
+        suffix = " ..." if len(failed_tickers) > 20 else ""
+        print(f"⚠️ Skip {len(failed_tickers)} ticker tanpa data: {preview}{suffix}")
 
     print("🌏 Menghitung market breadth dan regime IHSG...")
     breadth = hitung_market_breadth(data_massal, pool)
