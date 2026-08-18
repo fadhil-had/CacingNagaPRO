@@ -1,18 +1,12 @@
 import os
 import math
 import argparse
-import logging
-import time
-from io import StringIO
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import requests
-
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 try:
     from google import genai
@@ -25,10 +19,8 @@ except Exception:
 IDX_BENCHMARK = "^JKSE"
 IDX_TZ = ZoneInfo("Asia/Jakarta")
 LOT_SIZE = 100
-IDX_STOCK_LIST_URL = "https://www.idx.co.id/id/data-pasar/data-saham/daftar-saham"
-IDX_COMPANY_API_URL = "https://www.idx.co.id/primary/ListedCompany/GetCompanyProfiles"
 
-# Threshold ini adalah heuristic awal, BUKAN aturan resmi BEI.
+# Penentuan threshold - Pake AI kemaren nyari threshold nya wkwk
 TIMEFRAME_CONFIG = {
     "1hari": {
         "min_rows": 260,
@@ -140,128 +132,32 @@ def round_idx_price(price: float, direction: str = "nearest") -> float:
     return float(round(units) * tick)
 
 
-def normalisasi_kode_saham(values):
-    s = pd.Series(values, dtype="string").dropna().str.strip().str.upper()
-    s = s.str.replace(".JK", "", regex=False)
-    s = s[s.str.match(r"^[A-Z]{4}$", na=False)]
-    return s.drop_duplicates().sort_values().tolist()
-
-
-def load_universe_file(path):
-    if not path or not os.path.exists(path):
-        return []
-    df = pd.read_excel(path) if path.lower().endswith((".xlsx", ".xls")) else pd.read_csv(path)
-    kode_col = next((c for c in df.columns if str(c).strip().lower() in {"kode", "code", "ticker", "symbol", "kodeemiten"}), None)
-    if kode_col is None:
-        raise ValueError(f"Kolom kode saham tidak ditemukan di {path}")
-    return normalisasi_kode_saham(df[kode_col])
-
-
-def parse_idx_company_json(payload):
-    rows = None
-    if isinstance(payload, dict):
-        for key in ("data", "Data", "results", "Results"):
-            if isinstance(payload.get(key), list):
-                rows = payload[key]
-                break
-    elif isinstance(payload, list):
-        rows = payload
-    if not rows:
-        return []
-
-    codes = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        for key in ("KodeEmiten", "kodeEmiten", "Kode", "kode", "Code", "code", "Symbol", "symbol"):
-            if row.get(key):
-                codes.append(row[key])
-                break
-    return normalisasi_kode_saham(codes)
-
-
-def fetch_universe_idx(timeout=30):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-        "Accept": "application/json,text/html,application/xhtml+xml",
-        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-        "Referer": IDX_STOCK_LIST_URL,
-    }
-
+# Fallback - Karena bisa jadi gagal download dari yfinance, disediakan excel, cuma notes nya perlu di update jika ada IPO dll
+def ambil_semua_ticker_dari_excel(file_path="resource/daftar-saham.xlsx"):
     try:
-        r = requests.get(
-            IDX_COMPANY_API_URL,
-            params={"start": 0, "length": 5000},
-            headers=headers,
-            timeout=timeout,
+        if not os.path.exists(file_path):
+            print(f"❌ File '{file_path}' tidak ditemukan!")
+            return []
+
+        df_excel = pd.read_excel(file_path)
+        if "Kode" not in df_excel.columns:
+            print("❌ Kolom 'Kode' tidak ditemukan di file Excel!")
+            return []
+
+        tickers = (
+            df_excel["Kode"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
         )
-        r.raise_for_status()
-        tickers = parse_idx_company_json(r.json())
-        if len(tickers) >= 300:
-            return tickers, "IDX API"
-    except Exception:
-        pass
-
-    r = requests.get(IDX_STOCK_LIST_URL, headers=headers, timeout=timeout)
-    r.raise_for_status()
-    tables = pd.read_html(StringIO(r.text))
-    for df in tables:
-        df.columns = [" ".join(map(str, c)).strip() if isinstance(c, tuple) else str(c).strip() for c in df.columns]
-        kode_col = next(
-            (c for c in df.columns if any(k in str(c).lower() for k in ("kode", "code", "ticker", "symbol"))),
-            None,
-        )
-        if kode_col is None:
-            continue
-        tickers = normalisasi_kode_saham(df[kode_col])
-        if len(tickers) >= 300:
-            return tickers, "IDX Website"
-    raise ValueError("Daftar saham IDX tidak berhasil diparsing")
-
-
-def cache_is_fresh(path, refresh_days):
-    if not os.path.exists(path):
-        return False
-    age_seconds = datetime.now().timestamp() - os.path.getmtime(path)
-    return age_seconds <= refresh_days * 86400
-
-
-def ambil_semua_ticker(
-    cache_path="resource/daftar-saham-cache.csv",
-    excel_path="resource/daftar-saham.xlsx",
-    refresh_days=7,
-    force_refresh=False,
-):
-    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-
-    if not force_refresh and cache_is_fresh(cache_path, refresh_days):
-        try:
-            tickers = load_universe_file(cache_path)
-            if tickers:
-                print(f"📦 Universe cache: {len(tickers)} saham")
-                return [f"{t}.JK" for t in tickers]
-        except Exception as e:
-            print(f"⚠️ Cache tidak valid: {e}")
-
-    try:
-        tickers, source = fetch_universe_idx()
-        pd.DataFrame({"Kode": tickers}).to_csv(cache_path, index=False)
-        print(f"🌐 {source}: {len(tickers)} saham | cache diperbarui")
-        return [f"{t}.JK" for t in tickers]
+        tickers = tickers[tickers != ""]
+        tickers = tickers.apply(lambda x: x if x.endswith(".JK") else f"{x}.JK")
+        return tickers.drop_duplicates().tolist()
     except Exception as e:
-        print(f"⚠️ Refresh universe IDX gagal: {e}")
+        print(f"❌ Gagal membaca Excel: {e}")
+        return []
 
-    for path, label in ((cache_path, "cache lama"), (excel_path, "Excel fallback")):
-        try:
-            tickers = load_universe_file(path)
-            if tickers:
-                print(f"📦 Menggunakan {label}: {len(tickers)} saham")
-                return [f"{t}.JK" for t in tickers]
-        except Exception as e:
-            print(f"⚠️ {label} gagal: {e}")
-
-    print("❌ Universe saham tidak tersedia")
-    return []
 
 def ekstrak_ticker_frame(data_massal: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """Robust terhadap MultiIndex yfinance group_by='ticker'."""
@@ -288,77 +184,6 @@ def ekstrak_ticker_frame(data_massal: pd.DataFrame, ticker: str) -> pd.DataFrame
         return df
     except Exception:
         return pd.DataFrame()
-
-
-def download_benchmark_yahoo(period: str, retries: int = 2) -> pd.DataFrame:
-    for attempt in range(retries + 1):
-        try:
-            raw = yf.download(
-                IDX_BENCHMARK,
-                period=period,
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=True,
-                repair=False,
-                progress=False,
-                threads=False,
-            )
-            df = ekstrak_ticker_frame(raw, IDX_BENCHMARK)
-            if not df.empty and df["Close"].dropna().size >= 50:
-                return df
-        except Exception:
-            pass
-        if attempt < retries:
-            time.sleep(1.5 * (attempt + 1))
-    return pd.DataFrame()
-
-
-def download_saham_yahoo(pool: list[str], period: str, batch_size: int = 100, retries: int = 1):
-    frames = {}
-    failed = []
-
-    for start in range(0, len(pool), batch_size):
-        batch = pool[start:start + batch_size]
-        pending = list(batch)
-
-        for attempt in range(retries + 1):
-            if not pending:
-                break
-            try:
-                raw = yf.download(
-                    pending,
-                    period=period,
-                    interval="1d",
-                    group_by="ticker",
-                    auto_adjust=True,
-                    repair=False,
-                    progress=False,
-                    threads=True,
-                )
-            except Exception:
-                raw = pd.DataFrame()
-
-            still_missing = []
-            for ticker in pending:
-                df = ekstrak_ticker_frame(raw, ticker)
-                if not df.empty and df["Close"].dropna().size >= 20:
-                    frames[ticker] = df
-                else:
-                    still_missing.append(ticker)
-
-            pending = still_missing
-            if pending and attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
-
-        failed.extend(pending)
-        done = min(start + batch_size, len(pool))
-        print(f"   Yahoo: {done}/{len(pool)} ticker diproses")
-
-    if not frames:
-        return pd.DataFrame(), failed
-
-    data = pd.concat(frames, axis=1).sort_index()
-    return data, failed
 
 
 def buang_daily_candle_belum_selesai(df: pd.DataFrame) -> pd.DataFrame:
@@ -389,6 +214,8 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError("Data OHLCV tidak tersedia")
 
+    # Turnover dihitung pada level daily agar weekly/monthly tidak sekadar
+    # menggunakan Close akhir periode × total volume.
     df["Turnover"] = df["Close"] * df["Volume"]
 
     if mode_tren == "1hari":
@@ -424,6 +251,8 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
     else:
         raise ValueError(f"Mode tren tidak dikenal: {mode_tren}")
 
+    # Untuk weekly/monthly, hanya pakai candle yang label periodenya sudah
+    # <= tanggal daily terakhir yang sudah dianggap selesai.
     if mode_tren != "1hari" and not tf.empty:
         last_completed_daily = pd.Timestamp(df.index.max()).normalize()
         tf = tf[tf.index.normalize() <= last_completed_daily]
@@ -515,6 +344,8 @@ def deteksi_pola_candle(hari_ini: pd.Series, kemarin: pd.Series):
     if hammer:
         return "Hammer", True, strong_close
     if strong_close and body > 0:
+        # Strong close saja belum cukup dianggap setup; dipakai sebagai konfirmasi
+        # untuk breakout/pullback agar tidak terlalu mudah menambah score.
         return "Strong Bullish Close", False, strong_close
     return "Tidak ada pola bullish kuat", False, strong_close
 
@@ -670,10 +501,12 @@ def analisa_saham_confluence(
         if not all(np.isfinite(v) for v in [close, ema9, ema20, ema50, atr, atr_pct]):
             raise ValueError("Indikator utama mengandung NaN")
 
+        # ---------- Likuiditas IDX: gunakan Rupiah turnover daily ----------
         turnover20, turnover60 = hitung_daily_liquidity(df_saham)
         liquidity_ok = np.isfinite(turnover20) and turnover20 >= min_turnover
         price_ok = close >= min_price
 
+        # ---------- Hard trend filter ----------
         if mode_tren == "1hari":
             structural_trend = close > ema200 and ema20 > ema50
         elif mode_tren == "1minggu":
@@ -698,14 +531,17 @@ def analisa_saham_confluence(
             valid_wick,
         ])
 
+        # ---------- Trend factor ----------
         slope_n = cfg["slope_lookback"]
         ema20_prev = safe_float(df["EMA20"].iloc[-1 - slope_n], ema20)
         trend_ok = close > ema20 and ema9 > ema20 and ema20 > ema20_prev
 
+        # ---------- Relative strength vs IHSG ----------
         rs_excess, stock_return, rs_trend_up = hitung_relative_strength(
             df, ihsg_tf, cfg["rs_lookback"]
         )
 
+        # ---------- Momentum ----------
         rsi_now = safe_float(hari_ini["RSI"], 50)
         rsi_prev = safe_float(kemarin["RSI"], rsi_now)
         momentum_ok = (
@@ -713,18 +549,21 @@ def analisa_saham_confluence(
             and rsi_now >= rsi_prev - 2.0
         )
 
+        # ---------- MACD ----------
         hist_now = safe_float(hari_ini["Histogram"], 0)
         hist_prev = safe_float(kemarin["Histogram"], hist_now)
         macd_now = safe_float(hari_ini["MACD"], 0)
         signal_now = safe_float(hari_ini["Signal_Line"], 0)
         macd_ok = macd_now > signal_now and hist_now > 0 and hist_now >= hist_prev
 
+        # ---------- Volume ----------
         vol_ma20 = safe_float(hari_ini["Vol_MA20"], 0)
         vol_ratio = safe_float(hari_ini["Volume"], 0) / vol_ma20 if vol_ma20 > 0 else 0
         vol_z = safe_float(hari_ini["Vol_Z"], 0)
         bullish_body = safe_float(hari_ini["Body"], 0) > 0
         volume_ok = bullish_body and (vol_ratio >= 1.20 or vol_z >= 1.0)
 
+        # ---------- Price action: breakout / pullback / candle ----------
         prev_high = safe_float(hari_ini["Prev_High"], close)
         nama_pola, pola_candle_ok, strong_close = deteksi_pola_candle(hari_ini, kemarin)
 
@@ -757,6 +596,7 @@ def analisa_saham_confluence(
         else:
             setup_name = "Belum ada trigger"
 
+        # ---------- Support / Entry / Stop / Target ----------
         sr_window = cfg["sr_window"]
         support = safe_float(df["Low"].rolling(sr_window).min().iloc[-1], close - atr)
         resistance = safe_float(df["High"].rolling(sr_window).max().iloc[-1], close + atr)
@@ -770,6 +610,7 @@ def analisa_saham_confluence(
 
         structure_stop = min(ema20, support) - 0.25 * atr
         atr_stop = entry - cfg["stop_atr"] * atr
+        # Pilih stop yang tidak terlalu longgar, tetapi tetap berada di bawah struktur.
         stop_raw = max(structure_stop, atr_stop)
         if stop_raw >= entry:
             stop_raw = entry - cfg["stop_atr"] * atr
@@ -854,6 +695,7 @@ def finalisasi_score_dan_status(candidates: list[dict], mode_tren: str, market_r
         for c in candidates:
             rs = c.get("rs_excess", np.nan)
             if np.isfinite(rs):
+                # Percentile empiris pada universe saat ini.
                 c["rs_percentile"] = float((rs_series <= rs).mean() * 100)
             else:
                 c["rs_percentile"] = 0.0
@@ -1139,9 +981,6 @@ def main():
     parser = argparse.ArgumentParser(description="IDX technical confluence scanner")
     parser.add_argument("--trend", choices=["1hari", "1minggu", "1bulan"], default="1hari")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
-    parser.add_argument("--universe-cache", default="resource/daftar-saham-cache.csv")
-    parser.add_argument("--universe-refresh-days", type=int, default=7)
-    parser.add_argument("--refresh-universe", action="store_true")
     parser.add_argument("--period", default="10y", choices=["5y", "10y", "max"])
     parser.add_argument(
         "--min-turnover",
@@ -1160,43 +999,34 @@ def main():
     parser.add_argument("--max-position-pct", type=float, default=20.0, help="Maksimum nilai satu posisi terhadap modal")
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
-    parser.add_argument("--yf-batch-size", type=int, default=100)
-    parser.add_argument("--yf-retries", type=int, default=1)
     args = parser.parse_args()
 
-    pool = ambil_semua_ticker(
-        cache_path=args.universe_cache,
-        excel_path=args.excel,
-        refresh_days=args.universe_refresh_days,
-        force_refresh=args.refresh_universe,
-    )
+    pool = ambil_semua_ticker_dari_excel(args.excel)
     if not pool:
         return
 
-    print(f"📥 Unduh {args.period} data: IHSG + {len(pool)} saham IDX | Mode {args.trend}...")
+    download_tickers = list(dict.fromkeys(pool + [IDX_BENCHMARK]))
+    print(f"📥 Unduh {args.period} data: {len(pool)} saham IDX + IHSG | Mode {args.trend}...")
 
-    ihsg_daily = download_benchmark_yahoo(args.period, retries=args.yf_retries)
+    try:
+        data_massal = yf.download(
+            download_tickers,
+            period=args.period,
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=True,
+            repair=True,
+            progress=False,
+            threads=True,
+        )
+    except Exception as e:
+        print(f"❌ Download yfinance gagal: {e}")
+        return
+
+    ihsg_daily = ekstrak_ticker_frame(data_massal, IDX_BENCHMARK)
     if ihsg_daily.empty:
-        print("❌ ^JKSE gagal diunduh dari Yahoo Finance. Coba ulang beberapa saat lagi.")
+        print("❌ Data IHSG (^JKSE) tidak tersedia. Scanner dihentikan karena market regime tidak bisa dihitung.")
         return
-
-    data_massal, failed_tickers = download_saham_yahoo(
-        pool,
-        args.period,
-        batch_size=args.yf_batch_size,
-        retries=args.yf_retries,
-    )
-    if data_massal.empty:
-        print("❌ Tidak ada data saham yang berhasil diunduh dari Yahoo Finance.")
-        return
-
-
-    valid_count = len(pool) - len(failed_tickers)
-    print(f"✅ Yahoo Finance: {valid_count}/{len(pool)} saham tersedia")
-    if failed_tickers:
-        preview = ", ".join(failed_tickers[:20])
-        suffix = " ..." if len(failed_tickers) > 20 else ""
-        print(f"⚠️ Skip {len(failed_tickers)} ticker tanpa data: {preview}{suffix}")
 
     print("🌏 Menghitung market breadth dan regime IHSG...")
     breadth = hitung_market_breadth(data_massal, pool)
