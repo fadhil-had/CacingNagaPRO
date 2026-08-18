@@ -1,0 +1,113 @@
+name: IDX Backtest Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      end_date:
+        description: "End date YYYY-MM-DD. Kosong = data terakhir yang ada."
+        required: false
+        default: ""
+        type: string
+      signal_step:
+        description: "1 = semua signal date, 5 = setiap 5 signal date"
+        required: true
+        default: "1"
+        type: string
+      top_picks:
+        description: "Jumlah top pick per signal date"
+        required: false
+        default: "3"
+        type: string
+      allow_overlap:
+        description: "Izinkan overlap ticker yang sama?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    name: Backtest ${{ matrix.trend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - trend: 1hari
+            start: "2022-01-01"
+            period: "10y"
+          - trend: 1minggu
+            start: "2020-01-01"
+            period: "10y"
+          - trend: 1bulan
+            start: "2018-01-01"
+            period: "max"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backtest
+        shell: bash
+        run: |
+          OUTPUT_DIR="output/backtest/${{ matrix.trend }}"
+
+          ARGS=(
+            --trend "${{ matrix.trend }}"
+            --start "${{ matrix.start }}"
+            --period "${{ matrix.period }}"
+            --signal-step "${{ inputs.signal_step }}"
+            --top "${{ inputs.top_picks || '3' }}"
+            --output-dir "$OUTPUT_DIR"
+          )
+
+          if [[ -n "${{ inputs.end_date }}" ]]; then
+            ARGS+=(--end "${{ inputs.end_date }}")
+          fi
+
+          if [[ "${{ inputs.allow_overlap }}" == "true" ]]; then
+            ARGS+=(--allow-overlap-same-ticker)
+          fi
+
+          python tests/test_financial_screener.py "${ARGS[@]}"
+
+      - name: Add report to job summary
+        if: always()
+        shell: bash
+        run: |
+          REPORT="output/backtest/${{ matrix.trend }}/BACKTEST_REPORT_${{ matrix.trend }}.md"
+          if [[ -f "$REPORT" ]]; then
+            echo "## Backtest report: ${{ matrix.trend }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Backtest report tidak ditemukan untuk ${{ matrix.trend }}." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload backtest result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idx-backtest-${{ matrix.trend }}
+          path: output/backtest/${{ matrix.trend }}/
+          if-no-files-found: warn
+          retention-days: 30
