@@ -132,7 +132,6 @@ def round_idx_price(price: float, direction: str = "nearest") -> float:
     return float(round(units) * tick)
 
 
-# Fallback - Karena bisa jadi gagal download dari yfinance, disediakan excel, cuma notes nya perlu di update jika ada IPO dll
 def ambil_semua_ticker_dari_excel(file_path="resource/daftar-saham.xlsx"):
     try:
         if not os.path.exists(file_path):
