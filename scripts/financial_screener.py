@@ -1,5 +1,7 @@
 import os
 import math
+import time
+import random
 import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -1058,21 +1060,63 @@ def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report)
         "Akhiri disclaimer satu kalimat."
     )
 
-    try:
-        client = genai.Client(api_key=api_key)
-        model = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
-        response = client.models.generate_content(
-            model=model,
-            contents="\n".join(prompt),
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-            ),
-        )
-        return response.text or fallback_report
-    except Exception as e:
-        print(f"⚠️ Gemini API gagal ({e}); memakai report deterministik.")
-        return fallback_report
+    client = genai.Client(api_key=api_key)
 
+    # GEMINI_MODEL tetap bisa dipakai untuk override dari GitHub Secret/Env.
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+    # Fallback model hanya dipakai bila primary gagal setelah retry.
+    models = [primary_model]
+    if primary_model != "gemini-3.1-flash-lite":
+        models.append("gemini-3.1-flash-lite")
+
+    max_attempts_per_model = 3
+    retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")
+
+    for model_index, model in enumerate(models):
+        print(f"🤖 Gemini report model: {model}")
+
+        for attempt in range(max_attempts_per_model):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents="\n".join(prompt),
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                    ),
+                )
+
+                if response.text:
+                    return response.text
+
+                print(f"⚠️ {model} mengembalikan response kosong.")
+                break
+
+            except Exception as e:
+                error_text = str(e)
+                is_retryable = any(code in error_text for code in retryable_codes)
+
+                if is_retryable and attempt < max_attempts_per_model - 1:
+                    delay = (2 ** attempt) + random.uniform(0.0, 1.0)
+                    print(
+                        f"⚠️ {model} sementara gagal "
+                        f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                    )
+                    print(f"⏳ Retry dalam {delay:.1f} detik...")
+                    time.sleep(delay)
+                    continue
+
+                print(
+                    f"⚠️ {model} gagal "
+                    f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                )
+                break
+
+        if model_index < len(models) - 1:
+            print(f"🔁 Pindah ke fallback model: {models[model_index + 1]}")
+
+    print("ℹ️ Semua model Gemini gagal; memakai report deterministik.")
+    return fallback_report
 
 def simpan_csv(candidates: list[dict], path: str):
     if not path:
