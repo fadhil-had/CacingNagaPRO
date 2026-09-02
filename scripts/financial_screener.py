@@ -1151,9 +1151,424 @@ def simpan_csv(candidates: list[dict], path: str):
     out.to_csv(path, index=False)
 
 
+# ---------------------------------------------------------------------------
+# Mode saham tunggal (--trend all --ticker <kode>): 3 timeframe untuk 1 saham
+# ---------------------------------------------------------------------------
+
+def normalisasi_ticker(ticker: str) -> str:
+    t = str(ticker).strip().upper()
+    if not t:
+        return ""
+    return t if t.endswith(".JK") else f"{t}.JK"
+
+
+def download_satu_saham(ticker: str, period: str) -> pd.DataFrame:
+    print(f"📥 Unduh data harian {ticker} (period={period})...")
+    try:
+        data = yf.download(
+            ticker,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            repair=True,
+            progress=False,
+            threads=False,
+        )
+    except Exception as e:
+        print(f"❌ Download {ticker} gagal: {e}")
+        return pd.DataFrame()
+
+    df = ekstrak_ticker_frame(data, ticker)
+    if df.empty:
+        print(f"❌ Tidak ada data OHLCV untuk {ticker}.")
+        return pd.DataFrame()
+    print(f"✅ {ticker}: {len(df)} bar harian tersedia.")
+    return df
+
+
+def analisa_saham_3_timeframe(
+    ticker: str,
+    df_saham: pd.DataFrame,
+    ihsg_daily: pd.DataFrame,
+    min_turnover: float,
+    min_price: float,
+) -> dict:
+    """Mode saham tunggal: jalankan pipeline pada 3 timeframe utama."""
+    hasil = {}
+    breadth_tunggal = {
+        "breadth50": np.nan,
+        "breadth200": np.nan,
+        "median_return20": np.nan,
+        "jumlah_saham_breadth": 0,
+    }
+
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        try:
+            ihsg_tf = siapkan_data_untuk_timeframe(ihsg_daily, mode)
+            market_regime = analisa_market_regime(ihsg_daily, mode, breadth_tunggal)
+            res = analisa_saham_confluence(
+                ticker, df_saham, ihsg_tf, mode, min_turnover, min_price
+            )
+            if res.get("error"):
+                hasil[mode] = {"error": True, "alasan": res.get("alasan", "")}
+            else:
+                res = finalisasi_status_tunggal(res, mode, market_regime)
+                hasil[mode] = {"result": res, "regime": market_regime}
+        except Exception as e:
+            hasil[mode] = {"error": True, "alasan": str(e)}
+    return hasil
+
+
+def finalisasi_status_tunggal(c: dict, mode_tren: str, market_regime: dict) -> dict:
+    """
+    Finalisasi score/status untuk 1 saham tanpa universe.
+    Karena hanya 1 saham dianalisis, syarat RS percentile universe diganti
+    syarat RS absolut (excess > 0 dan garis RS naik).
+    """
+    rs_ok = (
+        np.isfinite(c.get("rs_excess", np.nan))
+        and c["rs_excess"] > 0
+        and bool(c.get("rs_trend_up", False))
+    )
+    c["conditions"]["relative_strength"] = bool(rs_ok)
+    c["rs_percentile"] = np.nan
+
+    score = sum(
+        FACTOR_WEIGHTS[name] * int(bool(c["conditions"][name]))
+        for name in FACTOR_WEIGHTS
+    )
+    c["quality_score"] = float(score)
+
+    base_threshold = TIMEFRAME_CONFIG[mode_tren]["strong_buy_score"]
+    regime = market_regime["regime"]
+    if regime == "BULLISH":
+        required_score = base_threshold
+    elif regime == "NEUTRAL":
+        required_score = min(base_threshold + 5, 90)
+    else:
+        required_score = 101
+
+    if (
+        c["hard_pass"]
+        and c["conditions"]["setup"]
+        and c["quality_score"] >= required_score
+        and regime != "BEARISH"
+    ):
+        c["status"] = "Strong Buy"
+    elif c["hard_pass"] and c["quality_score"] >= 50:
+        c["status"] = "Watchlist"
+    else:
+        c["status"] = "Avoid"
+
+    c["kondisi_detail"] = ", ".join(
+        f"{'✅' if c['conditions'][k] else '❌'} {k}" for k in FACTOR_WEIGHTS
+    )
+    return c
+
+
+def deterministic_report_single(ticker: str, hasil: dict, capital=0) -> str:
+    lines = []
+    lines.append(
+        f"### 📊 IDX Stock Report — {ticker} "
+        f"(Multi-Timeframe: 1hari · 1minggu · 1bulan)"
+    )
+    lines.append("")
+    lines.append("| Timeframe | Regime IHSG | Status | Quality | Close | Entry | Stop | Target | R:R | Setup |")
+    lines.append("| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |")
+
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        entry = hasil.get(mode, {})
+        if entry.get("error"):
+            lines.append(
+                f"| {mode} | - | - | - | - | - | - | - | - | ⚠️ {entry.get('alasan', 'gagal')} |"
+            )
+            continue
+        c = entry["result"]
+        m = entry["regime"]
+        rr = safe_float(c["risk_reward"])
+        rr_txt = f"{rr:.2f}:1" if np.isfinite(rr) else "-"
+        lines.append(
+            f"| {mode} | {m['regime']} {m['score']}/{m['score_max']} | {c['status']} | "
+            f"{c['quality_score']:.0f}/100 | {format_rupiah(c['harga_terakhir'])} | "
+            f"{format_rupiah(c['entry_level'])} | {format_rupiah(c['stop_level'])} | "
+            f"{format_rupiah(c['target_price'])} | {rr_txt} | {c['setup_name']} |"
+        )
+
+    lines.append("")
+    lines.append("**Detail per timeframe:**")
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        entry = hasil.get(mode, {})
+        if entry.get("error"):
+            lines.append(f"- **{mode}** — gagal: {entry.get('alasan', '')}")
+            continue
+        c = entry["result"]
+        m = entry["regime"]
+        liq_m = c["turnover20"] / 1e9 if np.isfinite(c["turnover20"]) else np.nan
+        hard = "; ".join(c["hard_fail_reasons"]) if c["hard_fail_reasons"] else "semua lolos"
+        lines.append(
+            f"- **{mode}** — Status {c['status']}, RSI {c['rsi']:.1f}, "
+            f"RS excess {format_pct(c['rs_excess'])}, "
+            f"volume {c['vol_ratio']:.2f}x MA20 / Z {c['vol_z']:.2f}, "
+            f"median turnover 20D Rp {liq_m:.2f} miliar, ATR {format_pct(c['atr_pct'])}."
+        )
+        lines.append(
+            f"  Regime IHSG: {m['regime']} ({m['score']}/{m['score_max']}). "
+            f"Hard filter: {hard}. Faktor: {c['kondisi_detail']}."
+        )
+        if capital > 0 and c.get("position_size"):
+            p = c["position_size"]
+            if p:
+                lines.append(
+                    f"  Position sizing: {p['lots']} lot ({p['shares']} saham), "
+                    f"nilai sekitar {format_rupiah(p['estimated_value'])}, "
+                    f"risiko sekitar {format_rupiah(p['max_risk_rupiah'])}."
+                )
+
+    lines.append("")
+    lines.append("*Mode saham tunggal: RS percentile universe tidak dihitung (hanya 1 saham dianalisis).*")
+    lines.append("*Scanner teknikal bersifat probabilistik; validasi dengan backtest dan disiplin risk management.*")
+    return "\n".join(lines)
+
+
+def generate_gemini_report_single(ticker: str, hasil: dict, fallback_report: str) -> str:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key or genai is None or types is None:
+        if not api_key:
+            print("ℹ️ GEMINI_API_KEY tidak ada; memakai report deterministik.")
+        else:
+            print("ℹ️ google-genai tidak tersedia; memakai report deterministik.")
+        return fallback_report
+
+    prompt = [f"SAHAM: {ticker}", "Analisis multi-timeframe pada 3 kerangka utama.", ""]
+
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        entry = hasil.get(mode, {})
+        if entry.get("error"):
+            prompt.extend(
+                [f"TIMEFRAME {mode}: ERROR — {entry.get('alasan', '')}", "---"]
+            )
+            continue
+        c = entry["result"]
+        m = entry["regime"]
+        prompt.extend([
+            f"TIMEFRAME: {mode}",
+            f"Regime IHSG: {m['regime']} ({m['score']}/{m['score_max']}) | IHSG {m['close']:.2f}",
+            f"Status: {c['status']} | Quality: {c['quality_score']:.0f}/100",
+            f"Close: {c['harga_terakhir']:.2f} | Entry: {c['entry_level']:.2f} | Stop: {c['stop_level']:.2f} | Target: {c['target_price']:.2f}",
+            f"Setup: {c['setup_name']} | R:R plan: {c['risk_reward']:.2f}:1",
+            f"RS excess: {c['rs_excess']:.2%} | RSI: {c['rsi']:.1f} | ATR%: {c['atr_pct']:.2%}",
+            f"Volume: {c['vol_ratio']:.2f}x MA20 | Vol Z: {c['vol_z']:.2f}",
+            f"Hard pass: {c['hard_pass']} | Hard fail: "
+            f"{', '.join(c['hard_fail_reasons']) if c['hard_fail_reasons'] else '-'}",
+            f"Factors: {c['kondisi_detail']}",
+            "---",
+        ])
+
+    news = ambil_berita(ticker, 3)
+    prompt.extend(["Berita:", *(news if news else ["- Tidak ada berita terbaru dari feed Yahoo."])])
+
+    system_instruction = (
+        "Anda adalah reporting layer untuk scanner teknikal saham Indonesia/IDX. "
+        "JANGAN mengubah status, entry, stop, target, atau score yang diberikan program. "
+        "Jangan mengarang fundamental atau sentimen bila berita tidak tersedia. "
+        "Fokus menjelaskan data secara ringkas.\n\n"
+        "FORMAT OUTPUT langsung tanpa pembuka:\n"
+        f"### 📊 IDX Stock Report — {ticker} (Multi-Timeframe)\n"
+        "1) Tabel ringkas 3 timeframe (Timeframe | Status | Quality | Close | Entry | Stop | Target | Setup).\n"
+        "2) Multi-Timeframe Confluence: apakah semua timeframe saling searah (aligned), "
+        "timeframe mana sinyal terkuat dan terlemah.\n"
+        "3) Rekomendasi eksekusi: timeframe terbaik untuk entry, trigger, invalidation/stop, dan risiko utama.\n"
+        "Akhiri disclaimer satu kalimat."
+    )
+
+    client = genai.Client(api_key=api_key)
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    models = [primary_model]
+    if primary_model != "gemini-3.1-flash-lite":
+        models.append("gemini-3.1-flash-lite")
+
+    max_attempts_per_model = 3
+    retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")
+
+    for model_index, model in enumerate(models):
+        print(f"🤖 Gemini report model: {model}")
+
+        for attempt in range(max_attempts_per_model):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents="\n".join(prompt),
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                    ),
+                )
+
+                if response.text:
+                    return response.text
+
+                print(f"⚠️ {model} mengembalikan response kosong.")
+                break
+
+            except Exception as e:
+                error_text = str(e)
+                is_retryable = any(code in error_text for code in retryable_codes)
+
+                if is_retryable and attempt < max_attempts_per_model - 1:
+                    delay = (2 ** attempt) + random.uniform(0.0, 1.0)
+                    print(
+                        f"⚠️ {model} sementara gagal "
+                        f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                    )
+                    print(f"⏳ Retry dalam {delay:.1f} detik...")
+                    time.sleep(delay)
+                    continue
+
+                print(
+                    f"⚠️ {model} gagal "
+                    f"(attempt {attempt + 1}/{max_attempts_per_model}): {e}"
+                )
+                break
+
+        if model_index < len(models) - 1:
+            print(f"🔁 Pindah ke fallback model: {models[model_index + 1]}")
+
+    print("ℹ️ Semua model Gemini gagal; memakai report deterministik.")
+    return fallback_report
+
+
+def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
+    if not path:
+        return
+    rows = []
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        entry = hasil.get(mode, {})
+        if entry.get("error"):
+            rows.append({
+                "ticker": ticker,
+                "timeframe": mode,
+                "status": "ERROR",
+                "quality_score": np.nan,
+                "close": np.nan,
+                "entry": np.nan,
+                "stop": np.nan,
+                "target": np.nan,
+                "risk_reward": np.nan,
+                "setup": entry.get("alasan", ""),
+                "regime": "",
+                "rs_excess": np.nan,
+                "vol_ratio": np.nan,
+                "vol_z": np.nan,
+                "atr_pct": np.nan,
+                "turnover20": np.nan,
+                "hard_pass": False,
+                "hard_fail_reasons": "",
+                "factors": "",
+            })
+            continue
+        c = entry["result"]
+        m = entry["regime"]
+        rows.append({
+            "ticker": ticker,
+            "timeframe": mode,
+            "status": c["status"],
+            "quality_score": c["quality_score"],
+            "close": c["harga_terakhir"],
+            "entry": c["entry_level"],
+            "stop": c["stop_level"],
+            "target": c["target_price"],
+            "risk_reward": c["risk_reward"],
+            "setup": c["setup_name"],
+            "regime": m["regime"],
+            "rs_excess": c["rs_excess"],
+            "vol_ratio": c["vol_ratio"],
+            "vol_z": c["vol_z"],
+            "atr_pct": c["atr_pct"],
+            "turnover20": c["turnover20"],
+            "hard_pass": c["hard_pass"],
+            "hard_fail_reasons": ";".join(c["hard_fail_reasons"]),
+            "factors": c["kondisi_detail"],
+        })
+    out = pd.DataFrame(rows)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    out.to_csv(path, index=False)
+    print(f"📄 {path}")
+
+
+def main_single_ticker(args):
+    ticker = normalisasi_ticker(args.ticker)
+    if not ticker:
+        print("❌ Ticker tidak valid.")
+        return
+
+    print(f"🎯 Mode saham tunggal: {ticker} — analisis 3 timeframe.")
+
+    period = args.period
+    if period == "5y":
+        period = "10y"
+        print("ℹ️ Timeframe 1bulan butuh data >= 72 bar; period dijadikan 10y.")
+
+    ihsg_daily = download_ihsg(period)
+    if ihsg_daily.empty:
+        print("❌ Analisis dihentikan karena data IHSG tidak tersedia.")
+        return
+
+    df_saham = download_satu_saham(ticker, period)
+    if df_saham.empty:
+        print(f"❌ Analisis dihentikan karena data {ticker} tidak tersedia.")
+        return
+
+    hasil = analisa_saham_3_timeframe(
+        ticker, df_saham, ihsg_daily, args.min_turnover, args.min_price
+    )
+
+    for mode in ["1hari", "1minggu", "1bulan"]:
+        entry = hasil.get(mode, {})
+        if entry.get("error"):
+            print(f"  ⚠️ {mode}: gagal — {entry['alasan']}")
+        else:
+            c = entry["result"]
+            c["position_size"] = hitung_position_size(
+                c, args.capital, args.risk_pct, args.max_position_pct
+            )
+            print(
+                f"  ✅ {mode}: {c['status']} | Quality {c['quality_score']:.0f}/100 | "
+                f"Close {c['harga_terakhir']:.0f} | Setup: {c['setup_name']}"
+            )
+
+    fallback_report = deterministic_report_single(ticker, hasil, args.capital)
+    report = generate_gemini_report_single(ticker, hasil, fallback_report)
+    print("\n" + report)
+
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        try:
+            with open(summary_file, "a", encoding="utf-8") as f:
+                f.write("\n" + report + "\n")
+        except Exception as e:
+            print(f"⚠️ Gagal menulis GITHUB_STEP_SUMMARY: {e}")
+
+    ticker_file = ticker.replace(".JK", "")
+    simpan_csv_single(ticker, hasil, f"output/idx_single_{ticker_file}.csv")
+
+
 def main():
     parser = argparse.ArgumentParser(description="IDX technical confluence scanner")
-    parser.add_argument("--trend", choices=["1hari", "1minggu", "1bulan"], default="1hari")
+    parser.add_argument(
+        "--trend",
+        choices=["1hari", "1minggu", "1bulan", "all"],
+        default="1hari",
+        help=(
+            "1hari/1minggu/1bulan = rekomendasi saham sesuai timeframe. "
+            "all = WAJIB digabung dengan --ticker <kode> untuk analisis 3 timeframe 1 saham."
+        ),
+    )
+    parser.add_argument(
+        "--ticker",
+        default="",
+        help="Kode saham (BBCA atau BBCA.JK). Hanya valid bersama --trend all.",
+    )
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
     parser.add_argument("--period", default="10y", choices=["5y", "10y", "max"])
     parser.add_argument("--min-turnover", type=float, default=1_000_000_000)
@@ -1165,6 +1580,22 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
     args = parser.parse_args()
+
+    # ---------- Mode ALL: hanya valid dengan kode saham ----------
+    if args.trend == "all":
+        if args.ticker.strip():
+            return main_single_ticker(args)
+        print("❌ Jangan semua timeframe, berat.")
+        print("   Pilih satu timeframe (1hari/1minggu/1bulan) untuk rekomendasi saham,")
+        print("   atau kombinasikan --trend all dengan --ticker <kode> untuk analisis 3 timeframe.")
+        return
+
+    # ---------- Timeframe spesifik: kode saham tidak didukung di sini ----------
+    if args.ticker.strip():
+        print("❌ Kombinasi tidak didukung: `--trend <timeframe>` tidak menerima --ticker.")
+        print("   Gunakan `--trend all --ticker <kode>` untuk analisis 1 saham di 3 timeframe,")
+        print("   atau `--trend <timeframe>` saja untuk rekomendasi saham.")
+        return
 
     pool = ambil_semua_ticker_dari_excel(args.excel)
     if not pool:
