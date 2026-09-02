@@ -1,23 +1,25 @@
-# 📈 CacingNagaPRO - Multi-Factor IDX Stock Screener (V2)
+# 📈 CacingNagaPRO - Multi-Factor IDX Stock Screener
 
-Sistem automasi pemindaian saham IHSG berbasis **Multi-Factor Confluence** dengan **Gemini AI** & GitHub Actions. V2 menghapus indikator redundan (RSI, Stochastic) untuk sinyal berkualitas tinggi.
+Sistem automasi pemindaian saham IHSG berbasis **Multi-Factor Confluence** dengan **Gemini AI** & GitHub Actions. Fokus pada **3 timeframe utama** (1hari, 1minggu, 1bulan).
 
 ---
 
-## 🧠 Strategi (5 Faktor Inti)
+## 🧠 Strategi (Multi-Factor)
 
-Setiap saham di-score dari 5 faktor kunci. Hanya yang pass hard filters & score ≥threshold menjadi **Strong Buy**.
+Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters & score ≥threshold menjadi **Strong Buy**.
 
 ### Faktor yang Dievaluasi
 
 | # | Faktor | Deskripsi | Bobot |
 | :--- | :--- | :--- | ---: |
-| 1 | **Trend (EMA)** | Close > EMA20/50/200 sesuai timeframe | 22% |
-| 2 | **MACD** | MACD > Signal, Histogram > 0 & naik | 15% |
-| 3 | **Volume** | Spike ≥1.3-1.5× MA20 + bullish candle | 17% |
-| 4 | **Price Action** | Breakout / Pullback / Pola candlestick | 17% |
-| 5 | **Relative Strength** | Outperform IHSG benchmark | 22% |
-| — | **Hard Filters** | Trend struktur, Extension, Volatility, Likuiditas | N/A |
+| 1 | **Trend (EMA)** | Close > EMA20, EMA9 > EMA20, slope EMA20 naik | 20% |
+| 2 | **Relative Strength** | Outperform IHSG (excess > 0 + RS naik + percentile universe) | 20% |
+| 3 | **Momentum (RSI)** | RSI dalam rentang timeframe & tidak turun drastis | 10% |
+| 4 | **MACD** | MACD > Signal, Histogram > 0 & naik | 10% |
+| 5 | **Volume** | Body hijau + (ratio ≥1.2× MA20 atau Z ≥1.0) | 15% |
+| 6 | **Price Action** | Breakout / Pullback / Pola candlestick | 15% |
+| 7 | **Volatility (ATR%)** | ATR% dalam rentang timeframe | 10% |
+| — | **Hard Filters** | Struktur tren, Extension, Volatility, Likuiditas, Harga min | N/A |
 
 ### Timeframe
 
@@ -105,36 +107,19 @@ Pastikan `GEMINI_API_KEY` di-set di environment.
 
 ```
 scripts/
-  └── financial_screener.py      ← Main screener V2
+  └── financial_screener.py      ← Main screener (mode timeframe / mode saham)
 tests/
   └── test_financial_screener.py ← Backtest engine
 .github/workflows/
-  ├── financial_screener.yml     ← Daily live
-  └── backtest.yml               ← Manual backtest
+  ├── financial_screener.yml     ← Daily live (1hari) + manual (mode 1/2)
+  └── backtest-matrix.yml        ← Backtest 3 timeframe
 resource/
   └── daftar-saham.xlsx          ← IDX universe (900+)
 output/
-  └── backtest/                  ← Generated results
+  ├── idx-screening.csv          ← Hasil screening mode timeframe
+  ├── idx_single_<TICKER>.csv    ← Hasil analisis saham tunggal
+  └── backtest/                  ← Hasil backtest
 ```
-
----
-
-## 📋 Changelog V1 → V2
-
-### Dihapus (Redundan)
-- ❌ **RSI** → Tumpang tindih MACD
-- ❌ **Stochastic** → Duplicate oscillator
-
-### Diperkuat
-- ✅ **MACD** → Primary momentum (10% → 15%)
-- ✅ **Volume** → Higher threshold (15% → 17%)
-- ✅ **Price Action** → Pullback pattern added (15% → 17%)
-
-### Expected Improvement
-- Win rate: 52% → 58% (+6%)
-- Expectancy: 0.40R → 0.55R
-- Profit Factor: 1.3 → 1.6+ (sustainable)
-- Entry rate: -33% (quality > quantity)
 
 ---
 
@@ -157,7 +142,6 @@ Install: `pip install -r requirements.txt`
 | File | Isi |
 | :--- | :--- |
 | **README.md** | Overview, strategy, usage (Anda di sini) |
-| **RELEASE_NOTES_V2.md** | V2 improvements & technical details |
 | **BACKTEST_WORKFLOW_GUIDE.md** | Backtest inputs, outputs, tips |
 
 ---
