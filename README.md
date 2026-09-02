@@ -45,14 +45,37 @@ Setiap saham di-score dari 5 faktor kunci. Hanya yang pass hard filters & score 
 
 ## 🚀 Cara Menjalankan
 
-### Live Screener (Otomatis)
+### Mode 1 — Pilih timeframe saja → rekomendasi saham + analisa
 ```bash
 # Berjalan otomatis setiap hari jam 16:00 WIB via GitHub Actions
 # Hasil → GitHub Step Summary + output/idx-screening.csv
 
-# Manual lokal:
+# Manual lokal (3 rekomendasi terbaik sesuai indikator timeframe + analisa):
 python scripts/financial_screener.py --trend 1hari
+python scripts/financial_screener.py --trend 1minggu
+python scripts/financial_screener.py --trend 1bulan
 ```
+
+### Mode 2 — `all` + kode saham → hasil 3 timeframe + analisa
+```bash
+# Analisis 1 saham di 3 timeframe sekaligus (1hari / 1minggu / 1bulan):
+python scripts/financial_screener.py --trend all --ticker BBCA
+python scripts/financial_screener.py --trend all --ticker BBCA.JK --capital 25_000_000
+
+# Output: output/idx_single_BBCA.csv + report multi-timeframe
+```
+
+### ❌ Error — `all` tanpa kode saham
+```bash
+python scripts/financial_screener.py --trend all
+# ❌ Jangan semua timeframe, berat.
+#    Pilih satu timeframe (1hari/1minggu/1bulan) atau kombinasikan --trend all --ticker <kode>.
+```
+
+> Aturan:
+> - `--trend 1hari|1minggu|1bulan` (tanpa `--ticker`) → rekomendasi 3 saham + analisa.
+> - `--trend all --ticker <kode>` → analisis 1 saham di 3 timeframe + analisa.
+> - `--trend all` tanpa `--ticker`, atau `--trend <timeframe>` dengan `--ticker` → error.
 
 ### Backtest (Manual)
 ```bash
