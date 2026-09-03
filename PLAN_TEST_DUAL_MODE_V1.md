@@ -1,547 +1,634 @@
-# CacingNagaPRO — Executable Test Plan Dual Mode V1
+# CacingNagaPRO — Screening Result Validation Plan
 
-**Status:** PARTIALLY IMPLEMENTED - Mode 1 & Mode 2 functional, additional enhancements needed  
+**Status:** READY FOR SCREENING PERFORMANCE TESTING  
 **Tanggal:** 2026-09-03  
-**Revisi:** Updated to reflect current implementation state. Main code already implements Mode 1 & Mode 2 with CLI contracts. Enhanced backtest engine with error handling and config snapshotting.  
-**Scope:** V1, tanpa mengubah formula score atau strategi
+**Revisi:** FOCUSED - Test screening results through backtesting to improve stock selection accuracy  
+**Scope:** Validate that the screener identifies profitable stocks, improve screening methodology based on backtest results
 
 ---
 
-## Implementation Status Update
+## 1. Tujuan: Validasi Hasil Screening
 
-**Current State (2026-09-03):**
+**Pertanyaan Utama:** Apakah screener kita benar-benar mengidentifikasi saham yang profitable?
 
-✅ **Already Implemented:**
-- Mode 1 (Market Screening): Fully functional via `--trend 1hari/1minggu/1bulan`
-- Mode 2 (Single Stock Analysis): Fully functional via `--trend all --ticker <CODE>`
-- CLI contracts: `--trend` and `--ticker` arguments working as specified
-- Input validation: Error handling for invalid combinations
-- Multi-timeframe analysis: Single stock analysis across 3 timeframes
-- Basic backtest engine: Time-aware signal generation and trade simulation
-- GitHub Actions workflows: Automated daily screening and manual backtest matrix
-- Error handling: Basic error codes and exception handling in backtest
-- Config snapshotting: JSON config output for reproducibility
-
-⚠️ **Partially Implemented:**
-- Time-aware analysis: Functions work with historical data but could be enhanced with explicit `as_of_date` parameter
-- Feature store: No precomputed feature store (currently computes on-demand)
-- Pinned data snapshots: No snapshot pinning mechanism for deterministic testing
-- Consistency testing: No automated consistency checks between Mode 1 and Mode 2
-- Regression testing: No automated regression comparison framework
-- Centralized error codes: Basic error handling but not fully centralized with exit codes
-
-❌ **Not Yet Implemented:**
-- `pin_snapshot.py` script for data snapshot management
-- `check_consistency.py` for Mode 1 vs Mode 2 consistency validation
-- `regression_compare.py` for before/after regression testing
-- `analyze_multi_timeframe_backtest.py` for multi-timeframe alignment analysis
-- Precomputed feature store with parquet caching
-- Deterministic offline testing framework
-- Multi-timeframe alignment analysis with guardrails (n_trade >= 20)
+**Tujuan Spesifik:**
+1. **Validasi akurasi screening:** Apakah saham yang direkomendasikan screener menghasilkan profit?
+2. **Identifikasi kriteria terbaik:** Faktor apa yang paling akurat untuk memilih saham?
+3. **Optimasi methodology:** Bagaimana meningkatkan akurasi screening?
+4. **Bandingkan timeframe:** Timeframe mana yang memberikan hasil terbaik?
+5. **Risk-return analysis:** Apakah R:R ratio yang digunakan optimal?
 
 ---
 
-## 1. Tujuan
+## 2. Metrik Keberhasilan Screening
 
-Menguji dua mode penggunaan screener:
+**Primary Metrics (Fokus Utama):**
+- **Screening Accuracy:** Persentase rekomendasi yang menghasilkan profit
+- **Win Rate:** Persentase trade yang profit (target > 50% ideal)
+- **Expectancy (R):** Average R-multiple per trade yang direkomendasikan (> 1.0R ideal)
+- **Profit Factor:** Ratio gross profit vs gross loss dari rekomendasi (> 2.0 ideal)
 
-| Mode | Input | Output |
-|---|---|---|
-| Mode 1 — Market Screening | `timeframe=1hari/1minggu/1bulan`, kode saham kosong | Maksimal 3 rekomendasi saham |
-| Mode 2 — Single Stock | `timeframe=all`, kode saham terisi | Analisis satu saham pada 3 timeframe |
+**Secondary Metrics (Untuk Diagnosis):**
+- **Signal-to-Trade Conversion:** Persentase screening yang menjadi trade aktual
+- **Target Hit Rate:** Persentase rekomendasi yang mencapai target
+- **Average Hold Duration:** Rata-rata holding period untuk rekomendasi
+- **Maximum Drawdown:** Drawdown maksimal dari following screening recommendations
 
-Mode 2 hanya menampilkan analisis multi-timeframe. Mode 2 tidak mengubah score V1, tidak memilih top 3, dan tidak otomatis menjadi filter entry.
+**Screening Quality Metrics:**
+- **False Positive Rate:** Persentase rekomendasi yang ternyata loss
+- **True Positive Rate:** Persentase rekomendasi yang benar-benar profit
+- **Recommendation Consistency:** Konsistensi rekomendasi across market conditions
 
----
+## 3. Metodologi Testing Screening
 
-## 2. Aturan Input
+### Step 1: Baseline Screening Performance
+Jalankan screener pada data historis dan ukur performa rekomendasi:
 
-| Timeframe | Kode saham | Hasil |
-|---|---|---|
-| `1hari` / `1minggu` / `1bulan` | Kosong | Jalankan Mode 1 |
-| `all` | Terisi | Jalankan Mode 2 |
-| `all` | Kosong | Validation error |
-| Timeframe tertentu | Terisi | Validation error untuk scope saat ini |
-| Tidak valid | Apa pun | Validation error |
+```bash
+# Backtest screening performance harian
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
 
-Kode saham dinormalisasi ke uppercase dan format ticker IDX yang digunakan sistem (`normalisasi_ticker` → `BBCA.JK`). Ticker tidak ditemukan harus menghasilkan error yang jelas, bukan hasil kosong tanpa penjelasan.
+# Backtest screening performance mingguan
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
 
-> **Kesepakatan CLI:** repository memakai argumen `--trend` (bukan `--timeframe`) dan `--ticker` (bukan `--stock-code`). Seluruh command di Bagian 9 memakai kontrak sebenarnya di repository. Alias `--timeframe`/`--stock-code` boleh ditambahkan, tetapi kontrak utama tetap `--trend`/`--ticker`.
+# Backtest screening performance bulanan
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
+```
 
-Semua error routing memakai kode terpusat agar bisa di-assert otomatis (lihat Task 6):
+### Step 2: Analisis Hasil Screening
+Untuk setiap timeframe, analisis:
 
-| Kode | Kondisi |
-|---|---|
-| `ERR_INPUT` | `all` tanpa ticker, timeframe tidak valid, atau timeframe tertentu + ticker (TC-03/04/05) |
-| `ERR_TICKER_NOT_FOUND` | Ticker tidak ada di universe / tanpa data OHLCV (TC-07) |
-| `ERR_MARKET_CONTEXT` | Market context/regime gagal dihitung (TC-12) |
-| `ERR_INSUFFICIENT_DATA` | Satu timeframe kekurangan data; timeframe lain tetap tampil (TC-08) |
+**Screening Accuracy:**
+- Berapa persen rekomendasi yang profit?
+- Berapa persen rekomendasi yang mencapai target?
+- Berapa persen rekomendasi yang stop loss?
 
-Error routing/context keluar dengan exit code non-zero agar CI bisa menangkapnya.
+**Factor Contribution:**
+- Faktor mana yang paling akurat dalam mengidentifikasi saham profitable?
+- Bobot faktor saat ini sudah optimal atau perlu adjustment?
+- Kombinasi faktor mana yang memberikan win rate tertinggi?
 
----
+**Market Condition Impact:**
+- Apakah screener bekerja dengan baik di semua market regime?
+- Regime mana yang screener paling/least akurat?
+- Apakah perlu adjust criteria berdasarkan market condition?
 
-## 3. Prinsip Teknis
+### Step 3: Identifikasi Improvement Areas
+Berdasarkan hasil analysis, identifikasi:
 
-Gunakan satu fungsi analisis sebagai sumber kebenaran:
+**Jika Screening Accuracy < 45%:**
+- Criteria screening terlalu longgar → naikkan threshold
+- Faktor teknikal kurang akurat → adjust bobot atau ganti faktor
+- Market timing salah → adjust timeframe atau entry criteria
 
+**Jika Win Rate > 45% tapi Expectancy < 0.5R:**
+- R:R ratio tidak optimal → adjust stop/target
+- Entry timing tidak akurat → add confirmation factors
+- Position sizing tidak sesuai → adjust risk management
+
+**Jika Performance Beragam Across Regime:**
+- Tambahkan regime-based adjustment
+- Reduce exposure di regime dengan perform buruk
+- Add regime filter untuk screening
+
+### Step 4: Optimasi Screening Methodology
+Implement perubahan berdasarkan analysis:
+
+**Adjust Threshold:**
+- Naikkan/lower quality score threshold
+- Adjust individual factor thresholds (RSI range, ATR% range, dll)
+- Modify relative strength percentile requirement
+
+**Optimize Factor Weights:**
+- Beri bobot lebih tinggi untuk faktor yang akurat
+- Kurangi bobot untuk faktor yang noisy/less accurate
+- Tambah/hapus faktor berdasarkan contribution analysis
+
+**Improve Entry/Exit Criteria:**
+- Adjust entry trigger untuk mengurangi false signals
+- Optimize stop loss placement untuk reduce unnecessary exits
+- Improve target taking untuk maximize profitable exits
+
+### Step 5: Validasi Improvement
+Jalankan ulang screening dengan methodology baru:
+
+```bash
+# Test screening methodology yang dioptimasi
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_optimized/1hari
+```
+
+Bandingkan dengan baseline:
+- Apakah screening accuracy meningkat?
+- Apakah win rate meningkat?
+- Apakah expectancy meningkat?
+- Apakah improvement signifikan dan bukan kebetulan?
+
+## 4. Analisis Detail Screening Results
+
+### File Output untuk Screening Analysis
+Setiap backtest menghasilkan file-file untuk screening analysis:
+
+**Primary Files:**
+- `signals_<timeframe>.csv` - Semua rekomendasi screener yang di-generate
+- `trades_<timeframe>.csv` - Rekomendasi yang ter-trigger dan dieksekusi
+- `BACKTEST_REPORT_<timeframe>.md` - Ringkasan performa screening
+- `config_snapshot.json` - Konfigurasi screening untuk reproducibility
+
+**Analysis Files untuk Factor Analysis:**
+- `summary_regime_<timeframe>.csv` - Screening accuracy per market regime
+- `summary_setup_<timeframe>.csv` - Screening accuracy per setup type
+- `summary_score_<timeframe>.csv` - Screening accuracy per quality score range
+- `summary_rs_<timeframe>.csv` - Screening accuracy per RS percentile
+
+### Cara Membaca Hasil Screening
+
+**1. BACKTEST_REPORT - Screening Accuracy Summary**
+```markdown
+- Signals: 150           # Total rekomendasi screener
+- Triggered trades: 45   # Rekomendasi yang dieksekusi
+- Entry rate: 30%        # Persentase rekomendasi yang menjadi trade
+- Win rate: 51%          # Persentase rekomendasi yang profit
+- Target hit rate: 38%   # Persentase rekomendasi yang mencapai target
+- Expectancy: 0.8R       # Average R-multiple per rekomendasi
+- Profit factor: 1.8     # Ratio profit/loss dari rekomendasi
+- Max drawdown: -8.5R    # Drawdown maksimal dari following screening
+- Average hold: 8 sessions # Rata-rata holding rekomendasi
+```
+
+**2. CSV Analysis Files - Factor Performance Analysis**
+- **summary_regime:** Cari regime mana yang screening paling akurat
+- **summary_setup:** Cari setup type mana yang paling profitable
+- **summary_score:** Cari quality score range mana yang paling akurat
+- **summary_rs:** Cari RS percentile mana yang paling presiktif
+
+### Decision Making dari Screening Results
+
+**Jika Screening Accuracy < 40%:**
+- Screener menghasilkan terlalu banyak false signals
+- Review criteria screening - mungkin terlalu longgar
+- Check factor weights - mungkin faktor yang kurang akurat diberi bobot tinggi
+- Analyze market regime - mungkin screener gagal di kondisi tertentu
+
+**Jika Win Rate Tinggi tapi Expectancy Rendah:**
+- Screener mengidentifikasi saham profitable tapi R:R tidak optimal
+- Check stop loss - mungkin terlalu longgar atau placement tidak akurat
+- Review target taking - mungkin terlalu dekat atau tidak memaksimalkan profit
+- Analyze hold duration - mungkin exit terlalu cepat/terlambat
+
+**Jika Performance Sangat Beragam:**
+- Screener tidak konsisten di berbagai kondisi
+- Analyze regime performance - add regime-based adjustment
+- Check setup types - prefer setup yang lebih konsisten
+- Review timeframe - mungkin timeframe tertentu lebih akurat
+
+## 5. Iterative Screening Improvement
+
+### Siklus Screening Optimization
+
+```
+BASELINE → ANALYZE → OPTIMIZE → VALIDATE → REPEAT
+```
+
+**Step 1: Baseline Screening Performance**
+- Jalankan backtest dengan criteria screening current
+- Catat screening accuracy, win rate, expectancy, profit factor
+- Simpan sebagai baseline comparison
+
+**Step 2: Analyze Screening Results**
+- Identifikasi faktor yang paling/least akurat dalam stock selection
+- Cari pola dalam rekomendasi profitable vs unprofitable
+- Analyze performance across market conditions dan timeframes
+- Hypothesis perubahan yang bisa meningkatkan akurasi screening
+
+**Step 3: Optimize Screening Methodology**
+- Implement perubahan berdasarkan analysis
+- Adjust factor weights dan thresholds
+- Modify screening criteria untuk faktor yang underperform
+- Add/remove confirmation factors untuk reduce false signals
+
+**Step 4: Validate Screening Improvement**
+- Jalankan backtest dengan screening methodology baru
+- Bandingkan dengan baseline
+- Pastikan improvement signifikan dan bukan kebetulan
+- Validate improvement tidak hanya datanya tapi juga methodology
+
+**Step 5: Repeat sampai Target Tercapai**
+- Jika improvement → lanjut ke optimasi berikutnya
+- Jika tidak → revert dan coba hypothesis lain
+- Terus iterate sampai screening accuracy target tercapai
+
+### Target Screening Accuracy yang Realistis
+
+**Short-term (1-2 weeks):**
+- Screening accuracy > 45% (dari baseline mungkin 35-40%)
+- Win rate > 45% (dari baseline mungkin 35-40%)
+- Expectancy > 0.6R (dari baseline mungkin 0.3-0.5R)
+
+**Medium-term (1-2 months):**
+- Screening accuracy > 50%
+- Win rate > 50%
+- Expectancy > 0.8R
+- Profit factor > 1.5
+
+**Long-term (3-6 months):**
+- Screening accuracy > 55%
+- Win rate > 55%
+- Expectancy > 1.0R
+- Profit factor > 2.0
+
+## 6. Practical Screening Testing Commands
+
+### Baseline Screening Tests
+```bash
+# Quick screening test (1 tahun data)
+python3 tests/test_financial_screener.py --trend 1hari --start 2023-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_test/quick
+
+# Full screening baseline (3 tahun data harian)
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
+
+# Weekly screening baseline
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
+
+# Monthly screening baseline
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
+
+# All timeframes screening test
+python3 tests/test_financial_screener.py --trend all --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/all
+```
+
+### Screening Parameter Tests
+```bash
+# Test different number of recommendations
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 5 --signal-step 1 --output-dir output/screening_test/top5
+
+# Test different screening frequency (every 5th signal)
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 5 --output-dir output/screening_test/step5
+
+# Test with higher quality threshold (manual adjustment in code)
+# Edit TIMEFRAME_CONFIG for higher strong_buy_score threshold
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_test/high_threshold
+```
+
+### Current Screening (Live)
+```bash
+# Daily screening untuk hari ini
+python3 scripts/financial_screener.py --trend 1hari
+
+# Weekly screening
+python3 scripts/financial_screener.py --trend 1minggu
+
+# Monthly screening
+python3 scripts/financial_screener.py --trend 1bulan
+
+# Single stock analysis (untuk validation manual)
+python3 scripts/financial_screener.py --trend all --ticker BBCA
+```
+
+## 7. Analysis of Screening Results
+
+### Fokus pada Hasil Screening, Bukan Fitur
+
+**Yang TIDAK perlu dites:**
+❌ Apakah fungsi RSI calculation benar?
+❌ Apakah EMA cross-over bekerja?
+❌ Apakah volume ratio calculation akurat?
+❌ Apakah code error-free?
+
+**Yang PERLU dites:**
+✅ Apakah screener mengidentifikasi saham yang profitable?
+✅ Apakah rekomendasi screener menghasilkan profit?
+✅ Faktor mana yang paling akurat untuk stock selection?
+✅ Bagaimana meningkatkan akurasi screening?
+
+### Framework Analisis Screening Results
+
+**1. Screening Accuracy Analysis**
 ```python
-analyze_stock(ticker, timeframe, as_of_date, market_context)
+# Questions yang harus dijawab:
+- Apakah % rekomendasi yang profit > 50%?
+- Apakah screener lebih akurat dari random selection?
+- Apakah screener menghasilkan alpha di atas market?
+- Berapa banyak false signals yang dihasilkan?
 ```
 
-Alur yang diharapkan:
-
+**2. Factor Contribution Analysis**
 ```python
-# Mode 1
-results = analyze_universe(timeframe, as_of_date)
-output = rank_and_take_top_3(results)
-
-# Mode 2
-output = [
-    analyze_stock(ticker, "1hari", as_of_date, market_context),
-    analyze_stock(ticker, "1minggu", as_of_date, market_context),
-    analyze_stock(ticker, "1bulan", as_of_date, market_context),
-]
+# Dari summary files, identify:
+- Faktor mana yang paling korelasi dengan profitable outcomes?
+- Bobot faktor saat ini optimal atau perlu adjustment?
+- Apakah ada faktor yang sebenarnya noisy/irrelevant?
+- Kombinasi faktor mana yang memberikan hasil terbaik?
 ```
 
-Mode 1 dan Mode 2 wajib memakai:
-
-- Data snapshot yang sama.
-- Tanggal analisis yang sama.
-- Universe RS yang sama.
-- Market regime yang sama.
-- Fungsi indikator dan scoring yang sama.
-- Konfigurasi timeframe yang sama.
-
-RS Percentile tidak dihitung dari ticker tunggal. Nilainya diambil dari hasil ranking universe pada tanggal dan timeframe yang sama.
-
-> **Syarat kunci (fresh):** seluruh fungsi analisis harus **time-aware** — menerima `as_of_date` dan menghitung hanya dari data `<= as_of_date`, bukan selalu bar terakhir. `analisa_saham_confluence`, `analisa_market_regime`, dan `hitung_relative_strength` wajib menerima cutoff tanggal. Tanpa ini Mode 2 tidak bisa mereproduksi signal historis Mode 1 dan consistency test mustahil lolos.
-
----
-
-## 4. Pekerjaan Implementasi
-
-### Task 1 — Input routing ✅ COMPLETED
-
-- ✅ Tambahkan pilihan `timeframe=all`.
-- ✅ Tambahkan input opsional kode saham.
-- ✅ Implementasikan matrix validasi pada Bagian 2.
-- ✅ Pastikan perilaku Mode 1 lama tidak berubah.
-
-### Task 2 — Shared analysis engine ✅ COMPLETED
-
-- ✅ Pisahkan perhitungan indikator/scoring dari format output.
-- ✅ Pastikan Mode 1 dan Mode 2 memanggil fungsi analisis yang sama.
-- ✅ Jangan menduplikasi formula score untuk Mode 2.
-
-### Task 3 — Shared market context ⚠️ PARTIALLY COMPLETED
-
-- ✅ Hitung benchmark, regime, dan RS Percentile per tanggal dan timeframe.
-- ❌ Gunakan cache yang sama untuk kedua mode (belum diimplementasikan)
-- ❌ Jangan mengunduh ulang full universe untuk setiap permintaan ticker Mode 2 (belum dioptimasi)
-
-Cache minimal (belum diimplementasikan):
-
-```text
-as_of_date | timeframe | ticker | rs_excess | rs_percentile | market_regime
+**3. Market Condition Analysis**
+```python
+# Performance berdasarkan kondisi:
+- Apakah screener bekerja baik di bull/bear/sideways market?
+- Regime mana yang screener paling/least akurat?
+- Apakah perlu regime-based adjustment untuk screening?
+- Bagaimana screener perform di high vs low volatility periods?
 ```
 
-### Task 4 — Output Mode 2 ✅ COMPLETED
-
-Mode 2 menghasilkan tepat tiga baris:
-
-```text
-ticker | timeframe | status | score | required_score
-rs_percentile | factors | entry | stop | target | reason
+**4. Timeframe Comparison**
+```python
+# Bandingkan accuracy across timeframes:
+- Timeframe mana yang paling akurat untuk stock selection?
+- Apakah daily/weekly/monthly memberikan hasil yang berbeda?
+- Apakah multi-timeframe confirmation meningkatkan accuracy?
+- Timeframe mana yang paling practical untuk implementasi?
 ```
 
-Urutan harus tetap:
+### Practical Analysis Workflow
 
-1. `1hari`
-2. `1minggu`
-3. `1bulan`
-
-✅ Jika satu timeframe kekurangan data, tampilkan error untuk timeframe tersebut tanpa menggagalkan timeframe lain.
-
-### Task 5 — Output machine-readable ✅ COMPLETED
-
-✅ Pastikan hasil dapat disimpan sebagai CSV/JSON agar dapat dibandingkan otomatis. Tambahkan minimal:
-
-- ✅ `mode` (via separate files for different modes)
-- ✅ `as_of_date` (via signal_date in backtest)
-- ✅ `ticker`
-- ✅ `timeframe`
-- ✅ `rank` — hanya Mode 1
-- ✅ `score`
-- ✅ `required_score` (via threshold logic)
-- ✅ `status`
-- ✅ `rs_percentile`
-- ✅ Seluruh status faktor
-- ✅ `entry`, `stop`, `target`
-- ✅ `reason` (via setup_name and hard_fail_reasons)
-
-### Task 6 — Precomputed feature store (perf + konsistensi) ❌ NOT IMPLEMENTED
-
-❌ Jangan hitung ulang indikator untuk setiap tanggal signal. Precompute **sekali** per (ticker, timeframe) untuk seluruh rentang, lalu untuk tiap `as_of_date` cukup potong `df.loc[:as_of_date]` dan ambil bar terakhir.
-
-```text
-feature_store/<ticker>/<timeframe>.parquet    # OHLCV + indikator (EMA/RSI/MACD/ATR/Vol)
-rs_excess_cache/<date>/<timeframe>.parquet    # rs_excess per ticker dari universe yang sama
-```
-
-Keuntungan: (1) Mode 1 dan Mode 2 membaca input byte-identik sehingga consistency bisa dicapai; (2) menghilangkan perhitungan berulang O(signal_dates × universe) pada setiap cutoff.
-
-### Task 7 — Pinned data snapshot (determinisme lintas hari/mesin) ❌ NOT IMPLEMENTED
-
-❌ Data yfinance berubah antar hari (split, adjustment, delisting) sehingga TC-11 dan regression tidak bisa memakai unduhan live. Bekukan snapshot:
-
-- ❌ `scripts/pin_snapshot.py` mengunduh sekali lalu menyimpan ke `tests/fixtures/data/<name>.parquet` (subset ticker likuid: BBCA, ASII, TLKM, ANTM, GOTO, BRPT, dst).
-- ❌ Test unit/consistency/regression memakai `--snapshot` agar offline & deterministik.
-- ⚠️ Backtest full universe tetap live, tetapi config snapshot menyimpan parameter sebagai jejak.
-
-### Task 8 — Config & data fingerprinting ✅ PARTIALLY COMPLETED
-
-✅ Setiap folder output berisi `config_snapshot.json`:
-
-```json
-{
-  "run_timestamp": "...",
-  "mode": "...",
-  "params": {"top": 3, "signal_step": 1, "fees": {"buy": 0.15, "sell": 0.25}},
-  "timeframe_config": {},
-  "factor_weights": {},
-  "backtest_config": {}
-}
-```
-
-⚠️ Regression membandingkan fingerprint terlebih dahulu (script belum diimplementasikan). Jika config/data berbeda, hasil tidak dianggap "regresi" — hanya ditandai metadata mismatch.
-
----
-
-## 5. Automated Test Cases
-
-Gunakan fixture data tetap agar hasil test deterministik.
-
-| ID | Test | Expected result | Status |
-|---|---|---|---|
-| TC-01 | Timeframe tertentu, ticker kosong | Mode 1 berjalan | ✅ PASS |
-| TC-02 | `all`, ticker valid | Mode 2 menghasilkan 3 timeframe | ✅ PASS |
-| TC-03 | `all`, ticker kosong | Validation error | ✅ PASS |
-| TC-04 | Timeframe tertentu, ticker terisi | Validation error | ✅ PASS |
-| TC-05 | Timeframe invalid | Validation error | ✅ PASS |
-| TC-06 | Ticker lowercase/spasi | Dinormalisasi dengan benar | ✅ PASS |
-| TC-07 | Ticker tidak ditemukan | Ticker-not-found error | ✅ PASS |
-| TC-08 | Satu timeframe kekurangan data | Dua timeframe lain tetap tampil | ✅ PASS |
-| TC-09 | Mode 1 memiliki >3 kandidat | Output maksimal 3 saham | ✅ PASS |
-| TC-10 | Mode 1 tidak memiliki kandidat | Empty result yang valid, bukan crash | ✅ PASS |
-| TC-11 | Data dan config sama, run diulang | Output identik | ⚠️ NEEDS SNAPSHOT |
-| TC-12 | Mode 2 gagal membaca market context | Error terkontrol (`ERR_MARKET_CONTEXT`), tidak menghitung percentile palsu | ✅ PASS |
-| TC-13 | `as_of_date` historis (bukan hari ini) untuk ticker yang sama | Mode 2 pada tanggal historis identik dengan baris Mode 1 tanggal itu | ⚠️ NEEDS CONSISTENCY CHECK |
-| TC-14 | Snapshot data sama, mesin/tanggal berbeda | Output identik (deterministik) | ❌ NO SNAPSHOT SYSTEM |
-
-⚠️ Runner consistency dipakai lewat `scripts/check_consistency.py` (belum diimplementasikan). Unit tests TC-01..TC-14 memakai snapshot offline tanpa network (belum diimplementasikan).
-
-### Consistency test wajib ⚠️ NOT IMPLEMENTED
-
-Untuk ticker yang muncul pada Mode 1, jalankan Mode 2 pada tanggal yang sama lalu cocokkan baris timeframe yang sama.
-
-Field yang wajib identik:
-
-```text
-score
-required_score
-status
-rs_percentile
-market_regime
-trend_ok
-relative_strength_ok
-momentum_ok
-macd_ok
-volume_ok
-setup_ok
-volatility_ok
-entry
-stop
-target
-```
-
-Gunakan toleransi numerik hanya untuk floating-point. Status boolean/string harus sama persis.
-
-**Pass criteria:** mismatch = 0.
-
----
-
-## 6. Regression Test Mode 1
-
-Tujuan: memastikan penambahan Mode 2 tidak mengubah hasil V1 yang sudah ada.
-
-1. Bekukan commit V1 sebelum perubahan (`git rev-parse HEAD` / tag).
-2. Jalankan golden backtest pada **pinned snapshot** yang sama (bukan live data).
-3. Simpan golden output + fingerprint ke `output/regression/before/`.
-4. Implementasikan Mode 2 (tanpa menyentuh formula V1).
-5. Jalankan ulang Mode 1 dengan data (snapshot) dan config identik.
-6. Bandingkan via `scripts/regression_compare.py` (fingerprint dulu, lalu field-by-field).
-7. Selisih hanya boleh di kolom metadata baru.
-
-Field pembanding:
-
-- Tanggal signal.
-- Ticker dan rank.
-- Score/status.
-- RS Percentile.
-- Entry, stop, target.
-- Outcome dan R-multiple.
-
-**Pass criteria:** seluruh hasil identik, kecuali kolom metadata baru yang memang ditambahkan.
-
----
-
-## 7. Backtest V1 Mode 1
-
-Backtest strategi utama tetap dijalankan melalui Mode 1.
-
-| Timeframe | Periode development | Entry window | Max hold | Top |
-|---|---|---:|---:|---:|
-| `1hari` | 2022-01-01—2024-12-31 | 3 | 20 | 3 |
-| `1minggu` | 2020-01-01—2024-12-31 | 5 | 65 | 3 |
-| `1bulan` | 2018-01-01—2024-12-31 | 10 | 252 | 3 |
-
-### Pembagian periode pengujian
-
-| Pengujian | Periode | Kegunaan |
-|---|---|---|
-| Development Mode 1 `1hari` | 2022-01-01—2024-12-31 | Baseline dan diagnosis V1 harian |
-| Development Mode 1 `1minggu` | 2020-01-01—2024-12-31 | Baseline dan diagnosis V1 mingguan |
-| Development Mode 1 `1bulan` | 2018-01-01—2024-12-31 | Baseline dan diagnosis V1 bulanan |
-| Mode 2 multi-timeframe | **2022-01-01—2024-12-31** | Periode irisan yang sama untuk membandingkan tiga timeframe |
-| Locked test V1 vs V2 | **2025-01-01—2026-08-31** | Pengujian final setelah aturan V2 dibekukan |
-
-Data sebelum tanggal mulai tetap boleh dimuat sebagai **warm-up** EMA, MACD, RSI, ATR, dan indikator lain. Signal dan trade hanya dihitung jika tanggal signal berada di dalam periode evaluasi.
-
-Periode locked-test tidak boleh dilihat untuk memilih bobot, threshold, atau aturan V2. Jika V2 diubah setelah hasil locked-test diketahui, periode tersebut tidak lagi dianggap out-of-sample.
-
-Parameter:
-
-- Full universe eligible.
-- `signal-step=1`.
-- Fee beli 0,15% (`--buy-fee 0.15`), fee jual 0,25% (`--sell-fee 0.25`).
-- Slippage eksplisit (`--slippage-bps 0` default) — ditulis eksplisit agar reproducible.
-- Same-bar policy: `--same-bar-policy stop`.
-- Overlap: default off (`--allow-overlap-same-ticker` bila baseline V1 memakai overlap).
-- Data dibekukan via snapshot untuk smoke/regression; full run live dengan `data_snapshot_md5` tercatat.
-- V1 config (`TIMEFRAME_CONFIG`, `FACTOR_WEIGHTS`) tidak disentuh selama test ini.
-
-Urutan run:
-
-1. Smoke test 20–30 ticker.
-2. Full universe `1hari`.
-3. Validasi output.
-4. Full universe `1minggu`.
-5. Validasi output.
-6. Full universe `1bulan`.
-
-Output:
-
-```text
-output/backtest/v1_mode1/1hari/
-output/backtest/v1_mode1/1minggu/
-output/backtest/v1_mode1/1bulan/
-```
-
-Setiap folder minimal berisi `signals.csv`, `trades.csv`, `BACKTEST_REPORT_*.md`, `config_snapshot.json`, exclusion log, dan run report.
-
-CLI aktual: `python tests/test_financial_screener.py --trend <tf> --start ... --end ... --top 3 --signal-step 1 --output-dir output/backtest/v1_mode1/<tf>`.
-
----
-
-## 8. Analisis Multi-Timeframe Mode 2
-
-Mode 2 tidak menjalankan simulasi trade baru. Gunakan signal/trade Mode 1, kemudian tambahkan kondisi tiga timeframe pada ticker dan tanggal signal yang sama.
-
-Periode analisis Mode 2 adalah **2022-01-01 sampai 2024-12-31**. Periode bersama ini dipilih agar status `1hari`, `1minggu`, dan `1bulan` dibandingkan pada jendela waktu yang identik.
-
-### Proses
-
-1. Ambil setiap signal top-3 Mode 1.
-2. Ambil hasil `1hari`, `1minggu`, dan `1bulan` untuk ticker dan tanggal tersebut dari shared feature/cache.
-3. Bentuk `alignment_count` = jumlah timeframe dengan `status == "Strong Buy"`. Kolom sekunder `watch_alignment_count` = jumlah timeframe dengan `status in {"Strong Buy", "Watchlist"}` untuk sensitivitas. Definisi ini eksplisit agar konsisten antar run.
-4. Simpan hasil join.
-
-Output:
-
-```text
-signal_date
-ticker
-source_timeframe
-source_rank
-source_score
-status_1hari
-score_1hari
-rs_percentile_1hari
-status_1minggu
-score_1minggu
-rs_percentile_1minggu
-status_1bulan
-score_1bulan
-rs_percentile_1bulan
-alignment_count
-trade_outcome
-net_r
-```
-
-Kelompok analisis:
-
-| Alignment | Arti |
-|---:|---|
-| 0/3 | Tidak ada timeframe eligible |
-| 1/3 | Hanya satu timeframe eligible |
-| 2/3 | Dua timeframe selaras |
-| 3/3 | Semua timeframe selaras |
-
-Bandingkan setiap kelompok menggunakan:
-
-- Jumlah trade.
-- Win rate.
-- Expectancy R.
-- Profit factor.
-- Target hit rate.
-- Average holding period.
-- Maximum adverse excursion.
-- Breakdown per source timeframe dan market regime.
-
-**Guardrail sample size (fresh):** untuk metrik per kelompok (win rate, expectancy, profit factor, target rate, dsb) jangan menarik kesimpulan bila `n_trade < 20` — tampilkan `n/a`. Kesimpulan pada kelompok kecil = overfit. Minimum trade untuk laporan alignment: 20 per kelompok.
-
-Alignment hanya menjadi kandidat filter V2 jika peningkatan kualitas konsisten dan jumlah trade memadai. Jangan memasukkannya ke V1 selama test ini.
-
----
-
-## 9. Command Contract yang Perlu Tersedia
-
-Sesuaikan nama entry point dengan repository, tetapi kontrak eksekusinya harus setara dengan berikut.
-
-### Functional run (CLI aktual repo: `--trend` / `--ticker`)
-
+**Step 1: Baca Primary Results**
 ```bash
-python scripts/financial_screener.py --trend 1hari
-python scripts/financial_screener.py --trend 1minggu
-python scripts/financial_screener.py --trend 1bulan
-python scripts/financial_screener.py --trend all --ticker BBCA
+# Baca BACKTEST_REPORT untuk melihat:
+- Screening accuracy keseluruhan
+- Win rate dari rekomendasi
+- Expectancy per rekomendasi
+- Profit factor dari screening results
 ```
 
-### Automated tests
-
+**Step 2: Deep Dive Analysis**
 ```bash
-pytest tests/test_dual_mode.py -q          # TC-01..TC-14, offline via snapshot
-pytest tests/test_financial_screener.py -q # test existing (fixture)
+# Buka CSV files untuk detail analysis:
+# summary_regime_<tf>.csv → regime performance
+# summary_setup_<tf>.csv → setup type performance  
+# summary_score_<tf>.csv → quality score performance
+# summary_rs_<tf>.csv → relative strength performance
 ```
 
-### Backtest Mode 1 (kontrak repo)
+**Step 3: Identifikasi Improvement Areas**
+```python
+# Dari analysis, tentukan:
+- Faktor yang paling akurat → pertahankan/optimize
+- Faktor yang kurang akurat → adjust bobot atau remove
+- Market condition yang profitable → focus pada kondisi tersebut
+- Timeframe yang terbaik → prioritize untuk implementation
+```
 
+**Step 4: Implement Changes dan Re-test**
 ```bash
-python3 tests/test_financial_screener.py --trend 1hari \
-  --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 \
-  --period 10y --output-dir output/backtest/v1_mode1/1hari
-
-python tests/test_financial_screener.py --trend 1minggu \
-  --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 \
-  --period 10y --output-dir output/backtest/v1_mode1/1minggu
-
-python tests/test_financial_screener.py --trend 1bulan \
-  --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 \
-  --period max --output-dir output/backtest/v1_mode1/1bulan
+# Modify screening methodology → jalankan ulang → bandingkan hasil
+# Repeat cycle sampai screening accuracy target tercapai
 ```
 
-### Snapshot, consistency, regression, multi-timeframe
+## 8. Common Screening Issues & Solutions
 
+### Issue: Low Screening Accuracy (< 35%)
+**Symptoms:**
+- Screener menghasilkan banyak rekomendasi yang loss
+- Win rate jauh di bawah random selection
+- Banyak false signals
+
+**Possible Causes:**
+- Screening criteria terlalu longgar
+- Faktor teknikal kurang akurat untuk market saat ini
+- Faktor weights tidak optimal
+- Market condition tidak sesuai dengan methodology
+
+**Solutions:**
+- Naikkan quality score threshold
+- Tighten individual factor thresholds (RSI range, ATR% range, dll)
+- Adjust factor weights based on contribution analysis
+- Add regime filter untuk avoid kondisi market yang tidak cocok
+
+### Issue: High Screening Accuracy tapi Low Expectancy
+**Symptoms:**
+- Screener sering benar dalam mengidentifikasi saham profitable
+- Tapi R:R ratio kurang optimal
+- Profit per trade tidak maksimal
+
+**Possible Causes:**
+- Entry timing tidak optimal
+- Stop loss placement tidak akurat
+- Target taking terlalu cepat/terlambat
+- Risk management parameters tidak optimal
+
+**Solutions:**
+- Adjust entry trigger untuk lebih presisi
+- Optimize stop loss berdasarkan structure/volatility
+- Improve target taking dengan trail stop atau multi-level targets
+- Adjust ATR multiplier untuk stop/target
+
+### Issue: Sangat Variasi Performance
+**Symptoms:**
+- Screener sangat akurat di kondisi tertentu tapi sangat buruk di kondisi lain
+- Performance tidak konsisten across time
+- Tidak bisa dipercaya untuk live trading
+
+**Possible Causes:**
+- Methodology tidak robust untuk berbagai market conditions
+- Tidak ada regime-based adjustment
+- Faktor yang cocok untuk kondisi tertentu tapi tidak untuk yang lain
+
+**Solutions:**
+- Add regime-based screening adjustment
+- Prefer timeframes/factors yang lebih konsisten
+- Add market condition filter untuk screening
+- Reduce exposure di kondisi yang less favorable
+
+### Issue: Over-Optimization (Curve Fitting)
+**Symptoms:**
+- Sangat akurat di backtest period tapi gagal di live
+- Performance tidak reproducible di period berbeda
+- Terlalu banyak parameter adjustments
+
+**Solutions:**
+- Test di multiple time periods (train/test/validation)
+- Avoid over-tuning parameter
+- Keep methodology simple dan robust
+- Validate di out-of-sample period
+
+## 9. Success Criteria for Screening
+
+### Screening Accuracy Targets
+
+**Minimum Acceptable Performance:**
+- **Screening Accuracy:** > 40% (rekomendasi yang profit)
+- **Win Rate:** > 45% (trade yang dieksekusi yang profit)
+- **Expectancy:** > 0.5R (average profit per rekomendasi)
+- **Profit Factor:** > 1.5 (ratio profit/loss)
+
+**Good Performance:**
+- **Screening Accuracy:** > 50%
+- **Win Rate:** > 50%
+- **Expectancy:** > 0.8R
+- **Profit Factor:** > 1.8
+
+**Excellent Performance:**
+- **Screening Accuracy:** > 55%
+- **Win Rate:** > 55%
+- **Expectancy:** > 1.0R
+- **Profit Factor:** > 2.0
+
+### Practical Trading Criteria
+
+**Untuk Live Trading:**
+- Screener harus menghasilkan minimum 2-3 rekomendasi per minggu
+- Screening accuracy harus konsisten across berbagai market conditions
+- Maximum drawdown dari following screener harus terkendali (< -15R)
+- Signal-to-trade conversion harus reasonable (20-40%)
+
+### Consistency Requirements
+
+**Screening methodology harus:**
+- Konsisten performanya di berbagai time periods
+- Tidak over-fitted ke data tertentu
+- Reproducible dengan parameter yang sama
+- Robust terhadap perubahan market conditions
+
+## 10. Implementation Roadmap
+
+### Phase 1: Baseline Screening Performance (Week 1)
+**Target:** Dapatkan baseline performance screening methodology saat ini
+
+**Actions:**
+1. Jalankan backtest untuk ketiga timeframe
+2. Analisis screening accuracy untuk setiap timeframe
+3. Identify baseline performance metrics
+4. Document factors yang bekerja/tidak bekerja
+
+**Commands:**
 ```bash
-# Pin data snapshot sekali (offline untuk test & regression)
-python scripts/pin_snapshot.py --output tests/fixtures/data/idxsnap.parquet \
-  --tickers BBCA ASII TLKM ANTM GOTO BRPT --start 2021-01-01 --end 2024-12-31
-
-# Consistency Mode 1 vs Mode 2 (pass criteria: mismatch = 0)
-python scripts/check_consistency.py \
-  --snapshot tests/fixtures/data/idxsnap.parquet \
-  --output output/backtest/v1_mode2/consistency_check.csv
-
-# Regression Mode 1 before vs after
-python scripts/regression_compare.py \
-  --before output/regression/before \
-  --after output/backtest/v1_mode1 \
-  --output output/backtest/regression/mode1_before_vs_after.csv
-
-# Multi-timeframe join + alignment
-python scripts/analyze_multi_timeframe_backtest.py \
-  --input output/backtest/v1_mode1 \
-  --output output/backtest/v1_mode2 \
-  --start 2022-01-01 --end 2024-12-31
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
 ```
 
-Kontrak ini adalah kontrak aktual repository. Coding agent boleh menyesuaikan detail flag tanpa mengubah scope dan pass criteria.
+**Expected Output:**
+- Baseline screening accuracy untuk setiap timeframe
+- Identifikasi factors yang paling/least akurat
+- Understanding of performance berdasarkan market conditions
 
----
+### Phase 2: Factor Analysis & Optimization (Week 2-3)
+**Target:** Optimasi screening methodology berdasarkan baseline analysis
 
-## 10. Output Akhir
+**Actions:**
+1. Deep dive analysis dari CSV summary files
+2. Identify factors yang paling korelasi dengan profitable outcomes
+3. Adjust factor weights berdasarkan contribution analysis
+4. Test modification dengan backtest ulang
 
-```text
-output/backtest/
-├── v1_mode1/
-│   ├── 1hari/          # signals_1hari.csv, trades_1hari.csv, BACKTEST_REPORT_1hari.md,
-│   │                   # summary_*.csv, config_snapshot.json, exclusion log, run report
-│   ├── 1minggu/
-│   └── 1bulan/
-├── v1_mode2/
-│   ├── consistency_check.csv          # mismatch per field (pass = 0)
-│   ├── multi_timeframe_signals.csv    # join signal Mode 1 + status 3 timeframe
-│   ├── summary_alignment.csv
-│   └── MULTI_TIMEFRAME_REPORT.md
-└── regression/
-    ├── before/                        # golden output Mode 1 (pinned snapshot)
-    └── mode1_before_vs_after.csv
-
-tests/fixtures/data/idxsnap.parquet    # pinned snapshot (subset untuk test deterministik)
+**Commands:**
+```bash
+# Modify factor weights in financial_screener.py based on analysis
+# Then re-test
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_optimized/1hari
 ```
 
+**Expected Output:**
+- Improved screening accuracy vs baseline
+- Understanding factor contribution yang optimal
+- Methodology yang lebih akurat untuk stock selection
+
+### Phase 3: Threshold & Parameter Tuning (Week 4)
+**Target:** Optimize thresholds dan screening parameters
+
+**Actions:**
+1. Adjust quality score thresholds
+2. Optimize individual factor thresholds (RSI, ATR%, volume, dll)
+3. Test dengan berbagai parameter combinations
+4. Validate improvement signifikan dan bukan over-fitting
+
+**Commands:**
+```bash
+# Test dengan berbagai thresholds
+# Modify TIMEFRAME_CONFIG thresholds in financial_screener.py
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_tuned/1hari
+```
+
+**Expected Output:**
+- Optimized thresholds untuk screening
+- Reduced false signals
+- Improved signal-to-trade conversion
+
+### Phase 4: Market Condition Adaptation (Week 5-6)
+**Target:** Add regime-based adjustment untuk screening
+
+**Actions:**
+1. Analyze performance berdasarkan market regime
+2. Implement regime-based adjustments
+3. Add filters untuk unfavorable conditions
+4. Test robustness across market conditions
+
+**Commands:**
+```bash
+# Test dengan regime-based adjustment
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_regime/1hari
+```
+
+**Expected Output:**
+- More consistent performance across market conditions
+- Reduced drawdown di unfavorable conditions
+- Robust screening methodology
+
+### Phase 5: Final Validation & Live Testing (Week 7-8)
+**Target:** Validasi screening methodology untuk live implementation
+
+**Actions:**
+1. Comprehensive backtest di multiple periods
+2. Out-of-sample testing
+3. Paper trading validation
+4. Final methodology documentation
+
+**Commands:**
+```bash
+# Final comprehensive test
+python3 tests/test_financial_screener.py --trend all --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_final/all
+```
+
+**Expected Output:**
+- Validated screening methodology
+- Documentation dari optimal parameters
+- Ready untuk live implementation
+
+## 11. Summary & Next Steps
+
+### Key Philosophy
+**Fokus 100% pada Hasil Screening:**
+- Tidak peduli apakah code "perfect" atau fitur "berfungsi"
+- Yang penting: apakah screener mengidentifikasi saham yang profitable?
+- Backtest adalah tool untuk validasi screening methodology
+- Improvement berdasarkan data, bukan engineering perfection
+
+### Immediate Next Steps
+
+**1. Jalankan Baseline Screening Test (Hari Ini):**
+```bash
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
+```
+
+**2. Review Screening Accuracy:**
+- Baca `BACKTEST_REPORT_1hari.md` - apakah screening accuracy > 40%?
+- Buka `signals_1hari.csv` - berapa banyak rekomendasi yang profit?
+- Buka `trades_1hari.csv` - berapa banyak yang dieksekusi dan hasilnya?
+
+**3. Analyze Factor Performance:**
+- Buka `summary_setup_1hari.csv` - setup mana yang paling akurat?
+- Buka `summary_regime_1hari.csv` - regime mana yang screening paling profitable?
+- Buka `summary_score_1hari.csv` - quality score range mana yang paling presiktif?
+
+**4. Decide on Next Action:**
+- Jika screening accuracy sudah baik → test timeframes lain dan live
+- Jika screening accuracy kurang → adjust methodology dan re-test
+- Jika performance sangat variatif → add regime-based adjustment
+
+### Success Definition
+**Screening Methodology Sukses Jika:**
+- Screening accuracy > 50% (minimal 40% acceptable)
+- Win rate > 50% (minimal 45% acceptable)
+- Expectancy > 0.8R (minimal 0.5R acceptable)
+- Consistent performance across market conditions
+- Reproducible dengan parameter yang sama
+
+### Final Note
+**Ini bukan software testing - ini trading methodology validation:**
+- Backtest adalah tool untuk mengukur akurasi screening
+- Focus adalah mengidentifikasi saham profitable, bukan testing code
+- Improvement berdasarkan hasil trading, bukan engineering metrics
+- Success diukur dengan win rate dan profit, bukan test coverage
+
 ---
 
-## 11. Definition of Done
-
-Implementasi dan test dinyatakan selesai jika:
-
-- Seluruh TC-01 sampai TC-12 lulus.
-- Mode 1 tetap menghasilkan maksimal tiga saham.
-- Mode 2 menghasilkan tiga timeframe untuk ticker valid.
-- Consistency check Mode 1 vs Mode 2 memiliki mismatch nol.
-- Regression test menunjukkan hasil V1 tidak berubah.
-- RS Percentile menggunakan universe dan snapshot yang sama.
-- Mode 2 tidak memicu download/perhitungan full universe berulang untuk setiap ticker.
-- Full backtest Mode 1 selesai untuk tiga timeframe.
-- Laporan alignment terbentuk tanpa mengubah trade atau outcome V1.
-- Semua error data dicatat dan tidak menghentikan keseluruhan batch tanpa alasan.
-- Semua error routing/context memakai kode terpusat (`ERR_INPUT`, `ERR_TICKER_NOT_FOUND`, `ERR_MARKET_CONTEXT`, `ERR_INSUFFICIENT_DATA`) dengan exit code non-zero.
-- Engine analisis time-aware: `as_of_date` historis menghasilkan output yang sama dengan baris Mode 1 di tanggal yang sama (TC-13 lulus).
-- Determinisme TC-14 terverifikasi lewat pinned snapshot di dua run (mesin/tanggal berbeda).
-- Alignment dilaporkan dengan guardrail `n_trade >= 20` per kelompok; kelompok kecil ditandai `n/a`.
-
----
-
-## 12. Urutan Eksekusi Final
-
-1. Bekukan commit V1 + pin data snapshot (`pin_snapshot.py`).
-2. Buat golden output Mode 1 dari snapshot (simpan ke `output/regression/before/`).
-3. Implementasikan engine analisis time-aware (`as_of_date`) + shared feature store.
-4. Implementasikan input routing (`--trend`/`--ticker`) + kode error terpusat.
-5. Implementasikan shared market-context cache (breadth, regime, RS percentile per tanggal-timeframe).
-6. Satukan finalisasi score/status — satu jalur untuk Mode 1 & Mode 2, hapus duplikasi `finalisasi_status_tunggal`.
-7. Implementasikan output Mode 2 (3 baris, urutan tetap, `INSUFFICIENT_DATA` per timeframe).
-8. Jalankan unit & functional tests TC-01..TC-14 (offline, snapshot).
-9. Jalankan consistency test (`check_consistency.py`) — pass criteria mismatch = 0.
-10. Jalankan regression test Mode 1 (`regression_compare.py`).
-11. Smoke gate: subset 20–30 ticker + periode pendek; assert output non-empty + mismatch 0.
-12. Jalankan full backtest Mode 1 per timeframe (1hari → 1minggu → 1bulan).
-13. Buat multi-timeframe join dari signal Mode 1 (`analyze_multi_timeframe_backtest.py`).
-14. Buat summary alignment + laporan dengan guardrail n >= 20.
-15. Gunakan hasilnya sebagai bahan diagnosis V1 dan kandidat perubahan V2 (tanpa menyentuh V1).
-
----
-
-**Catatan:** plan ini menguji fitur dan strategi V1 tanpa menjadikan multi-timeframe alignment sebagai rekomendasi investasi atau aturan V2 secara otomatis.
+**Start with the baseline test dan let the screening results guide your improvements!**
