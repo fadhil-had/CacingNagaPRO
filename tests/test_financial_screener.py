@@ -19,10 +19,41 @@ from scripts import financial_screener as fs
 
 
 BACKTEST_CONFIG = {
-    "1hari": {"entry_window": 3, "max_hold": 20},
-    "1minggu": {"entry_window": 5, "max_hold": 65},
-    "1bulan": {"entry_window": 10, "max_hold": 252},
+    "daily_swing": {"entry_window": 3, "max_hold": 20},
+    "weekly_position": {"entry_window": 5, "max_hold": 65},
+    "monthly_long_term": {"entry_window": 10, "max_hold": 252},
 }
+
+# Alias legacy -> kanonis (CLI lama tetap jalan, pipeline selalu kanonis).
+BACKTEST_ALIASES = {
+    "1hari": "daily_swing",
+    "1minggu": "weekly_position",
+    "1bulan": "monthly_long_term",
+}
+
+
+def normalize_backtest_mode(mode: str) -> str:
+    m = str(mode or "").strip()
+    if m in BACKTEST_CONFIG:
+        return m
+    if m in BACKTEST_ALIASES:
+        return BACKTEST_ALIASES[m]
+    try:
+        return fs.normalize_timeframe(m)
+    except Exception:
+        return m
+
+
+def get_backtest_cfg(mode: str) -> dict:
+    canon = normalize_backtest_mode(mode)
+    if canon in BACKTEST_CONFIG:
+        return BACKTEST_CONFIG[canon]
+    # Fallback tunggal ke TIMEFRAME_CONFIG screener (entry_window/max_holding_bars).
+    tf = fs.get_timeframe_config(canon)
+    return {
+        "entry_window": tf.get("entry_window"),
+        "max_hold": tf.get("max_holding_bars"),
+    }
 
 # Centralized error codes for consistency with plan
 ERROR_CODES = {
@@ -59,13 +90,14 @@ def extract_all_frames(data_massal, pool):
 def get_signal_dates(ihsg_daily, mode_tren, start, end, step):
     ihsg_daily = normalize_df(ihsg_daily).dropna(subset=["Close"])
     daily_index = pd.DatetimeIndex(ihsg_daily.index)
+    mode_tren = normalize_backtest_mode(mode_tren)
 
-    if mode_tren == "1hari":
-        min_rows = fs.TIMEFRAME_CONFIG[mode_tren]["min_rows"]
+    if mode_tren == "daily_swing":
+        min_rows = fs.get_timeframe_config(mode_tren)["min_rows"]
         dates = list(daily_index[max(0, min_rows - 1):])
     else:
         tf = fs.siapkan_data_untuk_timeframe(ihsg_daily, mode_tren)
-        labels = tf.index[fs.TIMEFRAME_CONFIG[mode_tren]["min_rows"] - 1:]
+        labels = tf.index[fs.get_timeframe_config(mode_tren)["min_rows"] - 1:]
         dates = []
         for label in labels:
             pos = daily_index.searchsorted(pd.Timestamp(label), side="right") - 1
@@ -452,7 +484,9 @@ def fmt_num(v, digits=2):
 
 def make_report(mode, df, args):
     m = metrics(df)
-    return f"""# IDX Backtest — {mode.upper()}
+    canon = normalize_backtest_mode(mode)
+    rep_cfg = get_backtest_cfg(canon)
+    return f"""# IDX Backtest — {canon.upper()}
 
 - Signals: **{m['signals']}**
 - Triggered trades: **{m['triggered']}**
@@ -470,8 +504,8 @@ def make_report(mode, df, args):
 
 - Source of strategy rules: `scripts.financial_screener`
 - Top picks per signal date: {args.top}
-- Entry window: {BACKTEST_CONFIG[mode]['entry_window']} sessions
-- Max hold: {BACKTEST_CONFIG[mode]['max_hold']} sessions
+- Entry window: {rep_cfg['entry_window']} bars
+- Max hold (time-stop): {rep_cfg['max_hold']} bars
 - Same-bar policy: {args.same_bar_policy}
 - Buy fee: {args.buy_fee:.3f}%
 - Sell fee: {args.sell_fee:.3f}%
@@ -487,6 +521,7 @@ def make_report(mode, df, args):
 
 
 def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
+    mode = normalize_backtest_mode(mode)
     dates = get_signal_dates(
         ihsg_daily,
         mode,
@@ -495,7 +530,7 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
         args.signal_step,
     )
 
-    cfg = BACKTEST_CONFIG[mode]
+    cfg = get_backtest_cfg(mode)
     busy_until = {}
     rows = []
 
@@ -552,17 +587,17 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
             print(f"⚠️ {mode} {cutoff}: gagal finalisasi score - {e}")
             continue
 
-        strong_all = [c for c in candidates if c["status"] == "Strong Buy"]
-        if not strong_all:
+        ready_all = [c for c in candidates if fs.STATUS_ALIAS.get(c.get("status"), c.get("status")) == fs.STATUS_READY]
+        if not ready_all:
             continue
 
         ranked, pick_type = fs.ranking_candidates(candidates, max(len(candidates), args.top))
-        if pick_type != "Strong Buy":
+        if pick_type != fs.STATUS_READY:
             continue
 
         selected = []
         for c in ranked:
-            if c["status"] != "Strong Buy":
+            if fs.STATUS_ALIAS.get(c.get("status"), c.get("status")) != fs.STATUS_READY:
                 continue
 
             if not args.allow_overlap_same_ticker:
@@ -633,6 +668,7 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
 
 
 def save_outputs(df, mode, output_dir, args):
+    mode = normalize_backtest_mode(mode)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -676,9 +712,9 @@ def save_outputs(df, mode, output_dir, args):
             "same_bar_policy": args.same_bar_policy,
             "allow_overlap_same_ticker": args.allow_overlap_same_ticker,
         },
-        "timeframe_config": fs.TIMEFRAME_CONFIG.get(mode, {}),
+        "timeframe_config": fs.get_timeframe_config(mode),
         "factor_weights": fs.FACTOR_WEIGHTS,
-        "backtest_config": BACKTEST_CONFIG.get(mode, {}),
+        "backtest_config": get_backtest_cfg(mode),
     }
     
     config_path = out_dir / "config_snapshot.json"
@@ -691,9 +727,17 @@ def main():
     parser = argparse.ArgumentParser(description="Backtest IDX financial screener")
     parser.add_argument(
         "--trend",
-        choices=["1hari", "1minggu", "1bulan", "all"],
-        default="1hari",
-        help="Timeframe untuk backtest (all = run 3 timeframe sekaligus)",
+        choices=[
+            "daily_swing",
+            "weekly_position",
+            "monthly_long_term",
+            "1hari",
+            "1minggu",
+            "1bulan",
+            "all",
+        ],
+        default="daily_swing",
+        help="Timeframe untuk backtest (all = run 3 timeframe sekaligus; alias legacy 1hari/1minggu/1bulan tetap didukung)",
     )
     parser.add_argument("--start", default="2025-01-01", help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=None, help="End date YYYY-MM-DD (optional)")
@@ -718,14 +762,14 @@ def main():
     args = parser.parse_args()
 
     modes = (
-        ["1hari", "1minggu", "1bulan"]
+        ["daily_swing", "weekly_position", "monthly_long_term"]
         if args.trend == "all"
-        else [args.trend]
+        else [normalize_backtest_mode(args.trend)]
     )
 
-    if "1bulan" in modes and args.period == "5y":
+    if "monthly_long_term" in modes and args.period == "5y":
         args.period = "10y"
-        print("ℹ️ Timeframe 1bulan butuh data >= 72 bar; period dijadikan 10y.")
+        print("ℹ️ Timeframe monthly_long_term butuh data >= 72 bar; period dijadikan 10y.")
 
     try:
         pool = fs.ambil_semua_ticker_dari_excel(args.excel)

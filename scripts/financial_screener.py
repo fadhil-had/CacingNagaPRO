@@ -22,10 +22,19 @@ IDX_BENCHMARK = "^JKSE"
 IDX_TZ = ZoneInfo("Asia/Jakarta")
 LOT_SIZE = 100
 
-# Threshold ini adalah heuristic awal, BUKAN aturan resmi BEI.
-# Tuning kembali menggunakan backtest pada universe saham Anda.
+# Threshold ini adalah heuristic awal BASELINE V1, BUKAN aturan resmi BEI.
+# JANGAN ubah RSI / ATR / volume / skor / bobot faktor sebelum backtest
+# (win rate, expectancy, drawdown, performa per timeframe) — lihat poin 8.
+# rs_lookback monthly 10 = penyesuaian poin 3 (9-12 bulan). Nilai lain frozen.
+#
+# TIMEFRAME = timeframe CANDLE (agregasi OHLC), BUKAN batas maksimal posisi ditahan.
+# Batas waktu posisi diatur terpisah via max_holding_bars (poin 2, dalam satuan bar
+# pada timeframe candle tersebut) dan dipakai backtest sebagai time-stop.
 TIMEFRAME_CONFIG = {
-    "1hari": {
+    "daily_swing": {
+        "label": "daily_swing",
+        "candle": "1d (harian)",
+        "deskripsi": "Candle harian; cocok untuk swing pendek.",
         "min_rows": 260,
         "rs_lookback": 60,
         "sr_window": 20,
@@ -37,11 +46,17 @@ TIMEFRAME_CONFIG = {
         "max_atr_pct": 0.085,
         "min_atr_pct": 0.008,
         "breakout_vol_ratio": 1.30,
-        "strong_buy_score": 72,
+        "ready_to_enter_score": 72,
+        "strong_buy_score": 72,  # alias lama, jangan dipakai baru
         "stop_atr": 1.50,
         "target_rr": 2.00,
+        "entry_window": 3,  # bar ke depan untuk trigger entry (backtest)
+        "max_holding_bars": 10,  # batas waktu posisi (bar timeframe ini)
     },
-    "1minggu": {
+    "weekly_position": {
+        "label": "weekly_position",
+        "candle": "1W (mingguan)",
+        "deskripsi": "Candle mingguan; cocok untuk position swing menengah.",
         "min_rows": 120,
         "rs_lookback": 13,
         "sr_window": 12,
@@ -53,13 +68,19 @@ TIMEFRAME_CONFIG = {
         "max_atr_pct": 0.16,
         "min_atr_pct": 0.02,
         "breakout_vol_ratio": 1.20,
-        "strong_buy_score": 70,
+        "ready_to_enter_score": 70,
+        "strong_buy_score": 70,  # alias lama, jangan dipakai baru
         "stop_atr": 2.00,
         "target_rr": 2.50,
+        "entry_window": 5,
+        "max_holding_bars": 40,
     },
-    "1bulan": {
+    "monthly_long_term": {
+        "label": "monthly_long_term",
+        "candle": "1M (bulanan)",
+        "deskripsi": "Candle bulanan; cocok untuk long-term. Butuh >=72 bar (~6 thn).",
         "min_rows": 72,
-        "rs_lookback": 6,
+        "rs_lookback": 10,  # poin 3: 9-12 bulan (baseline V1 = 10)
         "sr_window": 8,
         "breakout_window": 6,
         "slope_lookback": 3,
@@ -69,11 +90,83 @@ TIMEFRAME_CONFIG = {
         "max_atr_pct": 0.28,
         "min_atr_pct": 0.04,
         "breakout_vol_ratio": 1.10,
-        "strong_buy_score": 68,
+        "ready_to_enter_score": 68,
+        "strong_buy_score": 68,  # alias lama, jangan dipakai baru
         "stop_atr": 2.50,
         "target_rr": 3.00,
+        "entry_window": 10,
+        "max_holding_bars": 120,
     },
 }
+
+# Alias legacy -> kanonis (backward compat CLI / backtest lama).
+TIMEFRAME_ALIASES = {
+    "1hari": "daily_swing",
+    "1minggu": "weekly_position",
+    "1bulan": "monthly_long_term",
+    "daily": "daily_swing",
+    "weekly": "weekly_position",
+    "monthly": "monthly_long_term",
+}
+
+CANONICAL_TIMEFRAMES = ["daily_swing", "weekly_position", "monthly_long_term"]
+
+# Status rekomendasi (poin 6):
+# - Ready to Enter  (dulu Strong Buy): hard_pass + skor >= threshold, regime OK
+# - Wait for Trigger (dulu Watchlist): hard_pass + skor >= 50 tapi < threshold
+# - Skip – Extended / Skip – Trend / Skip – Liquidity (dulu Avoid, kini spesifik)
+STATUS_READY = "Ready to Enter"
+STATUS_WAIT = "Wait for Trigger"
+STATUS_SKIP_EXTENDED = "Skip - Extended"
+STATUS_SKIP_TREND = "Skip - Trend"
+STATUS_SKIP_LIQUIDITY = "Skip - Liquidity"
+# Alias lama untuk kompatibilitas pembacaan hasil lama.
+STATUS_ALIAS = {
+    "Strong Buy": STATUS_READY,
+    "Watchlist": STATUS_WAIT,
+    "Avoid": STATUS_SKIP_TREND,
+}
+
+
+def normalize_timeframe(mode_tren: str) -> str:
+    """Kembalikan nama timeframe kanonis; terima alias legacy."""
+    m = str(mode_tren or "").strip()
+    if m in TIMEFRAME_CONFIG:
+        return m
+    if m in TIMEFRAME_ALIASES:
+        return TIMEFRAME_ALIASES[m]
+    return m
+
+
+def get_timeframe_config(mode_tren: str) -> dict:
+    """Ambil config timeframe dengan dukungan alias legacy."""
+    return TIMEFRAME_CONFIG[normalize_timeframe(mode_tren)]
+
+
+def get_ready_score(mode_tren: str) -> float:
+    cfg = get_timeframe_config(mode_tren)
+    return cfg.get("ready_to_enter_score", cfg.get("strong_buy_score"))
+
+
+def ambil_hasil_single(hasil: dict, mode_tren: str) -> dict:
+    """Ambil entry hasil single-ticker dengan dukungan alias legacy."""
+    mode = normalize_timeframe(mode_tren)
+    entry = hasil.get(mode, {})
+    if entry:
+        return entry
+    for _alias, _canon in TIMEFRAME_ALIASES.items():
+        if _canon == mode and hasil.get(_alias):
+            return hasil.get(_alias, {})
+    return {}
+
+def tentukan_status_skip(hard_fail_reasons: list) -> str:
+    """Klasifikasikan Avoid lama menjadi Skip yang spesifik (poin 6)."""
+    teks = " ".join([str(x).lower() for x in (hard_fail_reasons or [])])
+    if any(k in teks for k in ["likuiditas", "turnover", "harga", "liquidity"]):
+        return STATUS_SKIP_LIQUIDITY
+    if any(k in teks for k in ["ekstrem", "extension", "extended", "atr", "volatil"]):
+        return STATUS_SKIP_EXTENDED
+    return STATUS_SKIP_TREND
 
 FACTOR_WEIGHTS = {
     "trend": 20,
@@ -350,9 +443,12 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
     # menggunakan Close akhir periode × total volume.
     df["Turnover"] = df["Close"] * df["Volume"]
 
-    if mode_tren == "1hari":
+    # mode_tren = timeframe CANDLE (kanonis); alias legacy dinormalisasi.
+    mode_tren = normalize_timeframe(mode_tren)
+
+    if mode_tren == "daily_swing":
         tf = df[required + ["Turnover"]].copy()
-    elif mode_tren == "1minggu":
+    elif mode_tren == "weekly_position":
         tf = (
             df[required + ["Turnover"]]
             .resample("W-FRI", label="right", closed="right")
@@ -366,7 +462,7 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
             })
             .dropna(subset=required)
         )
-    elif mode_tren == "1bulan":
+    elif mode_tren == "monthly_long_term":
         tf = (
             df[required + ["Turnover"]]
             .resample("ME", label="right", closed="right")
@@ -385,7 +481,7 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
 
     # Untuk weekly/monthly, hanya pakai candle yang label periodenya sudah
     # <= tanggal daily terakhir yang sudah dianggap selesai.
-    if mode_tren != "1hari" and not tf.empty:
+    if mode_tren != "daily_swing" and not tf.empty:
         last_completed_daily = pd.Timestamp(df.index.max()).normalize()
         tf = tf[tf.index.normalize() <= last_completed_daily]
 
@@ -393,7 +489,7 @@ def resample_timeframe(df_daily: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
 
 
 def tambah_indikator(tf: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
-    cfg = TIMEFRAME_CONFIG[mode_tren]
+    cfg = get_timeframe_config(mode_tren)
     df = tf.copy()
 
     if len(df) < cfg["min_rows"]:
@@ -521,9 +617,10 @@ def hitung_market_breadth(data_massal: pd.DataFrame, pool: list[str]):
 
 
 def analisa_market_regime(ihsg_daily: pd.DataFrame, mode_tren: str, breadth: dict):
+    mode_tren = normalize_timeframe(mode_tren)
     df = siapkan_data_untuk_timeframe(ihsg_daily, mode_tren)
     now = df.iloc[-1]
-    cfg = TIMEFRAME_CONFIG[mode_tren]
+    cfg = get_timeframe_config(mode_tren)
 
     close = safe_float(now["Close"])
     ema20 = safe_float(now["EMA20"])
@@ -531,9 +628,9 @@ def analisa_market_regime(ihsg_daily: pd.DataFrame, mode_tren: str, breadth: dic
     ema200 = safe_float(now["EMA200"])
     rsi = safe_float(now["RSI"], 50)
 
-    if mode_tren == "1hari":
+    if mode_tren == "daily_swing":
         long_trend = close > ema200
-    elif mode_tren == "1minggu":
+    elif mode_tren == "weekly_position":
         long_trend = close > ema50
     else:
         long_trend = close > ema20
@@ -615,7 +712,8 @@ def analisa_saham_confluence(
     min_price: float,
 ):
     try:
-        cfg = TIMEFRAME_CONFIG[mode_tren]
+        mode_tren = normalize_timeframe(mode_tren)
+        cfg = get_timeframe_config(mode_tren)
         df = siapkan_data_untuk_timeframe(df_saham, mode_tren)
         if len(df) < 2:
             raise ValueError("Bar timeframe tidak cukup")
@@ -638,10 +736,10 @@ def analisa_saham_confluence(
         liquidity_ok = np.isfinite(turnover20) and turnover20 >= min_turnover
         price_ok = close >= min_price
 
-        # ---------- Hard trend filter ----------
-        if mode_tren == "1hari":
+        # ---------- Hard trend filter (timeframe CANDLE, bukan batas tahan) ----------
+        if mode_tren == "daily_swing":
             structural_trend = close > ema200 and ema20 > ema50
-        elif mode_tren == "1minggu":
+        elif mode_tren == "weekly_position":
             structural_trend = close > ema50 and ema20 > ema50
         else:
             structural_trend = close > ema20 and ema20 > ema50
@@ -651,7 +749,7 @@ def analisa_saham_confluence(
 
         candle_range = max(safe_float(hari_ini["Candle_Range"], 0), 1e-9)
         upper_wick_ratio = safe_float(hari_ini["Upper_Wick"], 0) / candle_range
-        valid_wick = upper_wick_ratio <= (0.38 if mode_tren == "1hari" else 0.50)
+        valid_wick = upper_wick_ratio <= (0.38 if mode_tren == "daily_swing" else 0.50)
 
         volatility_ok = cfg["min_atr_pct"] <= atr_pct <= cfg["max_atr_pct"]
         hard_pass = all([
@@ -736,9 +834,16 @@ def analisa_saham_confluence(
         tick = fraksi_harga_idx(close)
         if breakout_ok:
             entry_raw = max(close, prev_high + tick)
+            entry_type = "active"
         else:
+            # Poin 7: setup belum terkonfirmasi -> close BUKAN entry aktif,
+            # melainkan rencana (planned). Trigger breakout = Prev_High + tick.
             entry_raw = close
+            entry_type = "planned"
         entry = round_idx_price(entry_raw, "up")
+        trigger_raw = max(close, prev_high + tick)
+        trigger_price = round_idx_price(trigger_raw, "up")
+        planned_entry = entry
 
         structure_stop = min(ema20, support) - 0.25 * atr
         atr_stop = entry - cfg["stop_atr"] * atr
@@ -790,7 +895,10 @@ def analisa_saham_confluence(
             "atr_pct": atr_pct,
             "support_level": support,
             "resistance_level": resistance,
-            "entry_level": entry,
+            "entry_level": entry,  # kompat: = planned_entry bila planned, = trigger bila active
+            "entry_type": entry_type,  # active = trigger sudah tersentuh; planned = menunggu trigger
+            "trigger_price": trigger_price,  # harga trigger breakout (Prev_High + tick)
+            "planned_entry": planned_entry,  # rencana entry bila setup belum konfirmasi
             "stop_level": stop,
             "target_price": target,
             "risk_reward": risk_reward,
@@ -820,6 +928,7 @@ def analisa_saham_confluence(
 
 
 def finalisasi_score_dan_status(candidates: list[dict], mode_tren: str, market_regime: dict):
+    mode_tren = normalize_timeframe(mode_tren)
     valid_rs = [c["rs_excess"] for c in candidates if np.isfinite(c.get("rs_excess", np.nan))]
 
     if valid_rs:
@@ -835,7 +944,7 @@ def finalisasi_score_dan_status(candidates: list[dict], mode_tren: str, market_r
         for c in candidates:
             c["rs_percentile"] = 0.0
 
-    base_threshold = TIMEFRAME_CONFIG[mode_tren]["strong_buy_score"]
+    base_threshold = get_ready_score(mode_tren)
     regime = market_regime["regime"]
 
     for c in candidates:
@@ -859,23 +968,24 @@ def finalisasi_score_dan_status(candidates: list[dict], mode_tren: str, market_r
             required_score = min(base_threshold + 5, 90)
             min_rs_pct = 70
         else:
-            required_score = 101  # tidak keluarkan Strong Buy saat regime bearish
+            required_score = 101  # tidak keluarkan Ready to Enter saat regime bearish
             min_rs_pct = 80
 
-        strong_buy = (
+        # Poin 5: status eksplisit. Ready = boleh entry; Wait = setup valid tapi trigger belum ada;
+        # Skip-* menjelaskan alasan skip agar tidak ambigu.
+        ready = (
             c["hard_pass"]
             and c["conditions"]["setup"]
             and c["quality_score"] >= required_score
             and c["rs_percentile"] >= min_rs_pct
             and regime != "BEARISH"
         )
-
-        if strong_buy:
-            c["status"] = "Strong Buy"
+        if ready:
+            c["status"] = STATUS_READY
         elif c["hard_pass"] and c["quality_score"] >= 50:
-            c["status"] = "Watchlist"
+            c["status"] = STATUS_WAIT
         else:
-            c["status"] = "Avoid"
+            c["status"] = tentukan_status_skip(c.get("hard_fail_reasons", []))
 
         c["kondisi_detail"] = ", ".join(
             f"{'✅' if c['conditions'][k] else '❌'} {k}"
@@ -910,8 +1020,11 @@ def hitung_position_size(candidate: dict, capital: float, risk_pct: float, max_p
 
 
 def ranking_candidates(candidates: list[dict], limit: int = 3):
-    strong = [c for c in candidates if c["status"] == "Strong Buy"]
-    watch = [c for c in candidates if c["status"] == "Watchlist"]
+    # Kompat: status lama dipetakan ke status baru via STATUS_ALIAS.
+    def _st(c):
+        return STATUS_ALIAS.get(c.get("status"), c.get("status"))
+    strong = [c for c in candidates if _st(c) == STATUS_READY]
+    watch = [c for c in candidates if _st(c) == STATUS_WAIT]
 
     def key(c):
         return (
@@ -926,8 +1039,8 @@ def ranking_candidates(candidates: list[dict], limit: int = 3):
     watch = sorted(watch, key=key, reverse=True)
 
     if strong:
-        return strong[:limit], "Strong Buy"
-    return watch[:limit], "Watchlist"
+        return strong[:limit], STATUS_READY
+    return watch[:limit], STATUS_WAIT
 
 
 def format_rupiah(v):
@@ -1056,7 +1169,7 @@ def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report)
         "Tampilkan tabel: Ticker | Status | Quality | RS Percentile | Close | Entry | Stop | Target | Setup.\n"
         "Lalu Market Regime Summary 2-3 bullet.\n"
         "Lalu per ticker: thesis, trigger entry, invalidation/stop, dan risiko utama.\n"
-        "Jika status Watchlist, jelaskan apa yang belum terkonfirmasi.\n"
+        "Jika status Wait for Trigger, jelaskan apa yang belum terkonfirmasi.\n"
         "Akhiri disclaimer satu kalimat."
     )
 
@@ -1118,22 +1231,34 @@ def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report)
     print("ℹ️ Semua model Gemini gagal; memakai report deterministik.")
     return fallback_report
 
-def simpan_csv(candidates: list[dict], path: str):
+def simpan_csv(candidates: list[dict], path: str, mode_tren: str = ""):
     if not path:
         return
+    cfg = None
+    if mode_tren:
+        try:
+            cfg = get_timeframe_config(mode_tren)
+        except Exception:
+            cfg = None
     rows = []
     for c in candidates:
         rows.append({
             "ticker": c["ticker"],
             "date": c["date"],
+            "timeframe": normalize_timeframe(mode_tren) if mode_tren else "",
             "status": c["status"],
             "quality_score": c["quality_score"],
             "rs_percentile": c["rs_percentile"],
             "rs_excess": c["rs_excess"],
             "close": c["harga_terakhir"],
             "entry": c["entry_level"],
+            "entry_type": c.get("entry_type", ""),
+            "trigger_price": c.get("trigger_price", c.get("entry_level")),
+            "planned_entry": c.get("planned_entry", c.get("entry_level")),
             "stop": c["stop_level"],
             "target": c["target_price"],
+            "entry_window": cfg["entry_window"] if cfg else "",
+            "max_holding_bars": cfg["max_holding_bars"] if cfg else "",
             "setup": c["setup_name"],
             "rsi": c["rsi"],
             "atr_pct": c["atr_pct"],
@@ -1202,7 +1327,7 @@ def analisa_saham_3_timeframe(
         "jumlah_saham_breadth": 0,
     }
 
-    for mode in ["1hari", "1minggu", "1bulan"]:
+    for mode in CANONICAL_TIMEFRAMES:
         try:
             ihsg_tf = siapkan_data_untuk_timeframe(ihsg_daily, mode)
             market_regime = analisa_market_regime(ihsg_daily, mode, breadth_tunggal)
@@ -1239,7 +1364,7 @@ def finalisasi_status_tunggal(c: dict, mode_tren: str, market_regime: dict) -> d
     )
     c["quality_score"] = float(score)
 
-    base_threshold = TIMEFRAME_CONFIG[mode_tren]["strong_buy_score"]
+    base_threshold = get_ready_score(mode_tren)
     regime = market_regime["regime"]
     if regime == "BULLISH":
         required_score = base_threshold
@@ -1254,11 +1379,11 @@ def finalisasi_status_tunggal(c: dict, mode_tren: str, market_regime: dict) -> d
         and c["quality_score"] >= required_score
         and regime != "BEARISH"
     ):
-        c["status"] = "Strong Buy"
+        c["status"] = STATUS_READY
     elif c["hard_pass"] and c["quality_score"] >= 50:
-        c["status"] = "Watchlist"
+        c["status"] = STATUS_WAIT
     else:
-        c["status"] = "Avoid"
+        c["status"] = tentukan_status_skip(c.get("hard_fail_reasons", []))
 
     c["kondisi_detail"] = ", ".join(
         f"{'✅' if c['conditions'][k] else '❌'} {k}" for k in FACTOR_WEIGHTS
@@ -1270,14 +1395,14 @@ def deterministic_report_single(ticker: str, hasil: dict, capital=0) -> str:
     lines = []
     lines.append(
         f"### 📊 IDX Stock Report — {ticker} "
-        f"(Multi-Timeframe: 1hari · 1minggu · 1bulan)"
+        f"(Multi-Timeframe: daily_swing · weekly_position · monthly_long_term)"
     )
     lines.append("")
     lines.append("| Timeframe | Regime IHSG | Status | Quality | Close | Entry | Stop | Target | R:R | Setup |")
     lines.append("| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |")
 
-    for mode in ["1hari", "1minggu", "1bulan"]:
-        entry = hasil.get(mode, {})
+    for mode in CANONICAL_TIMEFRAMES:
+        entry = ambil_hasil_single(hasil, mode)
         if entry.get("error"):
             lines.append(
                 f"| {mode} | - | - | - | - | - | - | - | - | ⚠️ {entry.get('alasan', 'gagal')} |"
@@ -1296,8 +1421,8 @@ def deterministic_report_single(ticker: str, hasil: dict, capital=0) -> str:
 
     lines.append("")
     lines.append("**Detail per timeframe:**")
-    for mode in ["1hari", "1minggu", "1bulan"]:
-        entry = hasil.get(mode, {})
+    for mode in CANONICAL_TIMEFRAMES:
+        entry = ambil_hasil_single(hasil, mode)
         if entry.get("error"):
             lines.append(f"- **{mode}** — gagal: {entry.get('alasan', '')}")
             continue
@@ -1341,8 +1466,8 @@ def generate_gemini_report_single(ticker: str, hasil: dict, fallback_report: str
 
     prompt = [f"SAHAM: {ticker}", "Analisis multi-timeframe pada 3 kerangka utama.", ""]
 
-    for mode in ["1hari", "1minggu", "1bulan"]:
-        entry = hasil.get(mode, {})
+    for mode in CANONICAL_TIMEFRAMES:
+        entry = ambil_hasil_single(hasil, mode)
         if entry.get("error"):
             prompt.extend(
                 [f"TIMEFRAME {mode}: ERROR — {entry.get('alasan', '')}", "---"]
@@ -1440,8 +1565,12 @@ def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
     if not path:
         return
     rows = []
-    for mode in ["1hari", "1minggu", "1bulan"]:
-        entry = hasil.get(mode, {})
+    for mode in CANONICAL_TIMEFRAMES:
+        try:
+            cfg = get_timeframe_config(mode)
+        except Exception:
+            cfg = {}
+        entry = ambil_hasil_single(hasil, mode)
         if entry.get("error"):
             rows.append({
                 "ticker": ticker,
@@ -1450,8 +1579,13 @@ def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
                 "quality_score": np.nan,
                 "close": np.nan,
                 "entry": np.nan,
+                "entry_type": "",
+                "trigger_price": np.nan,
+                "planned_entry": np.nan,
                 "stop": np.nan,
                 "target": np.nan,
+                "entry_window": cfg.get("entry_window", ""),
+                "max_holding_bars": cfg.get("max_holding_bars", ""),
                 "risk_reward": np.nan,
                 "setup": entry.get("alasan", ""),
                 "regime": "",
@@ -1474,8 +1608,13 @@ def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
             "quality_score": c["quality_score"],
             "close": c["harga_terakhir"],
             "entry": c["entry_level"],
+            "entry_type": c.get("entry_type", ""),
+            "trigger_price": c.get("trigger_price", c.get("entry_level")),
+            "planned_entry": c.get("planned_entry", c.get("entry_level")),
             "stop": c["stop_level"],
             "target": c["target_price"],
+            "entry_window": cfg.get("entry_window", ""),
+            "max_holding_bars": cfg.get("max_holding_bars", ""),
             "risk_reward": c["risk_reward"],
             "setup": c["setup_name"],
             "regime": m["regime"],
@@ -1507,7 +1646,7 @@ def main_single_ticker(args):
     period = args.period
     if period == "5y":
         period = "10y"
-        print("ℹ️ Timeframe 1bulan butuh data >= 72 bar; period dijadikan 10y.")
+        print("ℹ️ Timeframe monthly_long_term butuh data >= 72 bar; period dijadikan 10y.")
 
     ihsg_daily = download_ihsg(period)
     if ihsg_daily.empty:
@@ -1523,8 +1662,8 @@ def main_single_ticker(args):
         ticker, df_saham, ihsg_daily, args.min_turnover, args.min_price
     )
 
-    for mode in ["1hari", "1minggu", "1bulan"]:
-        entry = hasil.get(mode, {})
+    for mode in CANONICAL_TIMEFRAMES:
+        entry = ambil_hasil_single(hasil, mode)
         if entry.get("error"):
             print(f"  ⚠️ {mode}: gagal — {entry['alasan']}")
         else:
@@ -1557,10 +1696,19 @@ def main():
     parser = argparse.ArgumentParser(description="IDX technical confluence scanner")
     parser.add_argument(
         "--trend",
-        choices=["1hari", "1minggu", "1bulan", "all"],
-        default="1hari",
+        choices=[
+            "daily_swing",
+            "weekly_position",
+            "monthly_long_term",
+            "1hari",
+            "1minggu",
+            "1bulan",
+            "all",
+        ],
+        default="daily_swing",
         help=(
-            "1hari/1minggu/1bulan = rekomendasi saham sesuai timeframe. "
+            "daily_swing/weekly_position/monthly_long_term = rekomendasi saham sesuai timeframe "
+            "(alias legacy 1hari/1minggu/1bulan tetap didukung). "
             "all = WAJIB digabung dengan --ticker <kode> untuk analisis 3 timeframe 1 saham."
         ),
     )
@@ -1580,13 +1728,16 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
     args = parser.parse_args()
+    # Normalisasi sekali: alias legacy tetap diterima tapi pipeline selalu kanonis.
+    if args.trend != "all":
+        args.trend = normalize_timeframe(args.trend)
 
     # ---------- Mode ALL: hanya valid dengan kode saham ----------
     if args.trend == "all":
         if args.ticker.strip():
             return main_single_ticker(args)
         print("❌ Jangan semua timeframe, berat.")
-        print("   Pilih satu timeframe (1hari/1minggu/1bulan) untuk rekomendasi saham,")
+        print("   Pilih satu timeframe (daily_swing/weekly_position/monthly_long_term) untuk rekomendasi saham,")
         print("   atau kombinasikan --trend all dengan --ticker <kode> untuk analisis 3 timeframe.")
         return
 
@@ -1668,25 +1819,25 @@ def main():
             args.max_position_pct,
         )
 
-    simpan_csv(candidates, args.output_csv)
+    simpan_csv(candidates, args.output_csv, args.trend)
 
     top_picks, pick_type = ranking_candidates(candidates, args.top)
     status_counts = pd.Series([c["status"] for c in candidates]).value_counts().to_dict()
 
     print(
         "📈 Hasil universe: "
-        f"Strong Buy={status_counts.get('Strong Buy', 0)}, "
-        f"Watchlist={status_counts.get('Watchlist', 0)}, "
-        f"Avoid={status_counts.get('Avoid', 0)}"
+        f"{STATUS_READY}={status_counts.get(STATUS_READY, 0)}, "
+        f"{STATUS_WAIT}={status_counts.get(STATUS_WAIT, 0)}, "
+        f"Skip={sum(v for k, v in status_counts.items() if str(k).startswith('Skip'))}"
     )
 
     if not top_picks:
-        print("⚠️ Tidak ada kandidat Strong Buy maupun Watchlist yang memenuhi filter dasar.")
+        print("⚠️ Tidak ada kandidat Ready to Enter maupun Wait for Trigger yang memenuhi filter dasar.")
         print(f"📄 Full screening tetap disimpan ke: {args.output_csv}")
         return
 
-    if pick_type == "Watchlist":
-        print("⚠️ Tidak ada Strong Buy yang lolos; menampilkan Watchlist terbaik.")
+    if pick_type == STATUS_WAIT:
+        print("⚠️ Tidak ada Ready to Enter yang lolos; menampilkan Wait for Trigger terbaik.")
 
     fallback_report = deterministic_report(
         top_picks,

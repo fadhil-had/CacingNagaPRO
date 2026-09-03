@@ -10,9 +10,12 @@ on:
       trend_mode:
         description: 'Pilih rentang waktu tren trading'
         required: true
-        default: '1hari'
+        default: 'daily_swing'
         type: choice
         options:
+          - daily_swing
+          - weekly_position
+          - monthly_long_term
           - 1hari
           - 1minggu
           - 1bulan
@@ -50,7 +53,7 @@ jobs:
         GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
       run: |
         # Menggunakan mode daily untuk run harian yang lebih presisi
-        python scripts/financial_screener.py --trend 1hari
+        python scripts/financial_screener.py --trend daily_swing
 
     - name: Run Stock Screener (Manual Trigger)
       if: github.event_name == 'workflow_dispatch'
@@ -58,7 +61,7 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
       run: |
-        # Mode 1: trend_mode 1hari/1minggu/1bulan (tanpa ticker) -> rekomendasi saham + analisa
+        # Mode 1: trend_mode daily_swing/weekly_position/monthly_long_term (tanpa ticker) -> rekomendasi saham + analisa
         # Mode 2: trend_mode=all + ticker        -> analisis 1 saham di 3 timeframe
         # Error  : trend_mode=all tanpa ticker   -> "Jangan semua timeframe, berat"
         if [ -n "${{ github.event.inputs.ticker }}" ]; then

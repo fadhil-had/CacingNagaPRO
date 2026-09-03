@@ -41,13 +41,13 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - trend: 1hari
+          - trend: daily_swing
             start: "2022-01-01"
             period: "10y"
-          - trend: 1minggu
+          - trend: weekly_position
             start: "2020-01-01"
             period: "10y"
-          - trend: 1bulan
+          - trend: monthly_long_term
             start: "2018-01-01"
             period: "max"
 
