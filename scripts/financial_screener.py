@@ -28,8 +28,12 @@ LOT_SIZE = 100
 # rs_lookback monthly 10 = penyesuaian poin 3 (9-12 bulan). Nilai lain frozen.
 #
 # TIMEFRAME = timeframe CANDLE (agregasi OHLC), BUKAN batas maksimal posisi ditahan.
-# Batas waktu posisi diatur terpisah via max_holding_bars (poin 2, dalam satuan bar
-# pada timeframe candle tersebut) dan dipakai backtest sebagai time-stop.
+# Batas waktu posisi V1 (saran user, dalam satuan bar timeframe + konversi hari bursa):
+# - daily_swing: 10 trading days = 10 bar daily
+# - weekly_position: 8 minggu = 8 bar weekly = 40 hari bursa (8*5)
+# - monthly_long_term: 6 bulan = 6 bar monthly = 126 hari bursa (6*21)
+# max_holding_bars dipakai untuk label/audit per timeframe;
+# max_hold_days dipakai backtest sebagai time-stop pada data daily.
 TIMEFRAME_CONFIG = {
     "daily_swing": {
         "label": "daily_swing",
@@ -50,8 +54,9 @@ TIMEFRAME_CONFIG = {
         "strong_buy_score": 72,  # alias lama, jangan dipakai baru
         "stop_atr": 1.50,
         "target_rr": 2.00,
-        "entry_window": 3,  # bar ke depan untuk trigger entry (backtest)
-        "max_holding_bars": 10,  # batas waktu posisi (bar timeframe ini)
+        "entry_window": 3,  # sesi harian ke depan untuk trigger entry (backtest daily)
+        "max_holding_bars": 10,  # V1: 10 trading days = 10 bar daily_swing
+        "max_hold_days": 10,  # V1 daily: time-stop backtest = 10 hari bursa
     },
     "weekly_position": {
         "label": "weekly_position",
@@ -72,8 +77,9 @@ TIMEFRAME_CONFIG = {
         "strong_buy_score": 70,  # alias lama, jangan dipakai baru
         "stop_atr": 2.00,
         "target_rr": 2.50,
-        "entry_window": 5,
-        "max_holding_bars": 40,
+        "entry_window": 5,  # sesi harian ke depan untuk trigger entry (backtest weekly)
+        "max_holding_bars": 8,  # V1: 8 minggu = 8 bar weekly_position
+        "max_hold_days": 40,  # V1: 8 minggu x 5 hari bursa (time-stop backtest daily)
     },
     "monthly_long_term": {
         "label": "monthly_long_term",
@@ -94,8 +100,9 @@ TIMEFRAME_CONFIG = {
         "strong_buy_score": 68,  # alias lama, jangan dipakai baru
         "stop_atr": 2.50,
         "target_rr": 3.00,
-        "entry_window": 10,
-        "max_holding_bars": 120,
+        "entry_window": 10,  # sesi harian ke depan untuk trigger entry (backtest monthly)
+        "max_holding_bars": 6,  # V1: 6 bulan = 6 bar monthly_long_term
+        "max_hold_days": 126,  # V1: 6 bulan x 21 hari bursa (time-stop backtest daily)
     },
 }
 
@@ -146,6 +153,14 @@ def get_timeframe_config(mode_tren: str) -> dict:
 def get_ready_score(mode_tren: str) -> float:
     cfg = get_timeframe_config(mode_tren)
     return cfg.get("ready_to_enter_score", cfg.get("strong_buy_score"))
+
+
+def get_max_hold_days(mode_tren: str) -> int:
+    """Time-stop V1 dalam hari bursa untuk backtest daily."""
+    cfg = get_timeframe_config(mode_tren)
+    if "max_hold_days" in cfg:
+        return int(cfg["max_hold_days"])
+    return int(cfg.get("max_holding_bars"))
 
 
 def ambil_hasil_single(hasil: dict, mode_tren: str) -> dict:
@@ -1259,6 +1274,7 @@ def simpan_csv(candidates: list[dict], path: str, mode_tren: str = ""):
             "target": c["target_price"],
             "entry_window": cfg["entry_window"] if cfg else "",
             "max_holding_bars": cfg["max_holding_bars"] if cfg else "",
+            "max_hold_days": cfg.get("max_hold_days", cfg.get("max_holding_bars", "")) if cfg else "",
             "setup": c["setup_name"],
             "rsi": c["rsi"],
             "atr_pct": c["atr_pct"],
@@ -1586,6 +1602,7 @@ def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
                 "target": np.nan,
                 "entry_window": cfg.get("entry_window", ""),
                 "max_holding_bars": cfg.get("max_holding_bars", ""),
+                "max_hold_days": cfg.get("max_hold_days", cfg.get("max_holding_bars", "")),
                 "risk_reward": np.nan,
                 "setup": entry.get("alasan", ""),
                 "regime": "",
@@ -1615,6 +1632,7 @@ def simpan_csv_single(ticker: str, hasil: dict, path: str = ""):
             "target": c["target_price"],
             "entry_window": cfg.get("entry_window", ""),
             "max_holding_bars": cfg.get("max_holding_bars", ""),
+            "max_hold_days": cfg.get("max_hold_days", cfg.get("max_holding_bars", "")),
             "risk_reward": c["risk_reward"],
             "setup": c["setup_name"],
             "regime": m["regime"],

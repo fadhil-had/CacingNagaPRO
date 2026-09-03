@@ -19,9 +19,10 @@ from scripts import financial_screener as fs
 
 
 BACKTEST_CONFIG = {
-    "daily_swing": {"entry_window": 3, "max_hold": 20},
-    "weekly_position": {"entry_window": 5, "max_hold": 65},
-    "monthly_long_term": {"entry_window": 10, "max_hold": 252},
+    # V1 time-stop (hari bursa, data daily): 10 hari / 8 minggu (=40) / 6 bulan (=126).
+    "daily_swing": {"entry_window": 3, "max_hold": 10},
+    "weekly_position": {"entry_window": 5, "max_hold": 40},
+    "monthly_long_term": {"entry_window": 10, "max_hold": 126},
 }
 
 # Alias legacy -> kanonis (CLI lama tetap jalan, pipeline selalu kanonis).
@@ -48,11 +49,11 @@ def get_backtest_cfg(mode: str) -> dict:
     canon = normalize_backtest_mode(mode)
     if canon in BACKTEST_CONFIG:
         return BACKTEST_CONFIG[canon]
-    # Fallback tunggal ke TIMEFRAME_CONFIG screener (entry_window/max_holding_bars).
+    # Fallback tunggal ke TIMEFRAME_CONFIG screener (entry_window/max_hold_days V1).
     tf = fs.get_timeframe_config(canon)
     return {
         "entry_window": tf.get("entry_window"),
-        "max_hold": tf.get("max_holding_bars"),
+        "max_hold": tf.get("max_hold_days", tf.get("max_holding_bars")),
     }
 
 # Centralized error codes for consistency with plan
@@ -504,8 +505,8 @@ def make_report(mode, df, args):
 
 - Source of strategy rules: `scripts.financial_screener`
 - Top picks per signal date: {args.top}
-- Entry window: {rep_cfg['entry_window']} bars
-- Max hold (time-stop): {rep_cfg['max_hold']} bars
+- Entry window: {rep_cfg['entry_window']} sessions
+- Max hold (time-stop): {rep_cfg['max_hold']} sessions (V1: 10 hari / 40 hari / 126 hari)
 - Same-bar policy: {args.same_bar_policy}
 - Buy fee: {args.buy_fee:.3f}%
 - Sell fee: {args.sell_fee:.3f}%
