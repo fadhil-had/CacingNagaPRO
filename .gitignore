@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Test / tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# Environment
+.venv/
+.env
+
+# Generated output (backtest & screening results)
+output/
