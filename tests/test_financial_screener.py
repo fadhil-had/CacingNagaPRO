@@ -25,7 +25,7 @@ BACKTEST_CONFIG = {
     "monthly_long_term": {"entry_window": 10, "max_hold": 126},
 }
 
-# Short alias -> kanonis.
+# Short alias -> kanonis (tanpa istilah lama 1hari/1minggu/1bulan).
 BACKTEST_ALIASES = {
     "daily": "daily_swing",
     "weekly": "weekly_position",
