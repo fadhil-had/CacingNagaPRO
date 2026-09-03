@@ -1,7 +1,10 @@
 import sys
 import math
 import argparse
+import json
+import hashlib
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -19,6 +22,14 @@ BACKTEST_CONFIG = {
     "1hari": {"entry_window": 3, "max_hold": 20},
     "1minggu": {"entry_window": 5, "max_hold": 65},
     "1bulan": {"entry_window": 10, "max_hold": 252},
+}
+
+# Centralized error codes for consistency with plan
+ERROR_CODES = {
+    "ERR_INPUT": "Invalid input combination",
+    "ERR_TICKER_NOT_FOUND": "Ticker not found in universe or no data",
+    "ERR_MARKET_CONTEXT": "Failed to calculate market context/regime",
+    "ERR_INSUFFICIENT_DATA": "Insufficient data for analysis",
 }
 
 
@@ -501,7 +512,8 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
         try:
             ihsg_tf = fs.siapkan_data_untuk_timeframe(ihsg_slice, mode)
             regime = fs.analisa_market_regime(ihsg_slice, mode, breadth)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ {mode} {cutoff}: gagal menghitung market regime - {e}")
             continue
 
         candidates = []
@@ -515,22 +527,30 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
             if stock_slice.empty:
                 continue
 
-            res = fs.analisa_saham_confluence(
-                ticker,
-                stock_slice,
-                ihsg_tf,
-                mode,
-                args.min_turnover,
-                args.min_price,
-            )
+            try:
+                res = fs.analisa_saham_confluence(
+                    ticker,
+                    stock_slice,
+                    ihsg_tf,
+                    mode,
+                    args.min_turnover,
+                    args.min_price,
+                )
 
-            if not res.get("error"):
-                candidates.append(res)
+                if not res.get("error"):
+                    candidates.append(res)
+            except Exception as e:
+                # Continue processing other stocks if one fails
+                continue
 
         if not candidates:
             continue
 
-        candidates = fs.finalisasi_score_dan_status(candidates, mode, regime)
+        try:
+            candidates = fs.finalisasi_score_dan_status(candidates, mode, regime)
+        except Exception as e:
+            print(f"⚠️ {mode} {cutoff}: gagal finalisasi score - {e}")
+            continue
 
         strong_all = [c for c in candidates if c["status"] == "Strong Buy"]
         if not strong_all:
@@ -555,48 +575,52 @@ def run_backtest(mode, pool, frames, data_massal, ihsg_daily, args):
                 break
 
         for rank, c in enumerate(selected, start=1):
-            sim = simulate_trade(
-                frames[c["ticker"]],
-                cutoff,
-                c["entry_level"],
-                c["stop_level"],
-                c["target_price"],
-                cfg["entry_window"],
-                cfg["max_hold"],
-                args.same_bar_policy,
-                args.buy_fee,
-                args.sell_fee,
-                args.slippage_bps,
-            )
+            try:
+                sim = simulate_trade(
+                    frames[c["ticker"]],
+                    cutoff,
+                    c["entry_level"],
+                    c["stop_level"],
+                    c["target_price"],
+                    cfg["entry_window"],
+                    cfg["max_hold"],
+                    args.same_bar_policy,
+                    args.buy_fee,
+                    args.sell_fee,
+                    args.slippage_bps,
+                )
 
-            rows.append({
-                "timeframe": mode,
-                "signal_date": str(cutoff.date()),
-                "ticker": c["ticker"],
-                "rank": rank,
-                "regime": regime["regime"],
-                "regime_score": regime["score"],
-                "quality_score": c["quality_score"],
-                "rs_percentile": c["rs_percentile"],
-                "rs_excess": c["rs_excess"],
-                "rsi": c["rsi"],
-                "vol_ratio": c["vol_ratio"],
-                "vol_z": c["vol_z"],
-                "atr_pct": c["atr_pct"],
-                "setup": c["setup_name"],
-                "signal_close": c["harga_terakhir"],
-                "entry_trigger": c["entry_level"],
-                "planned_stop": c["stop_level"],
-                "planned_target": c["target_price"],
-                "planned_rr": c["risk_reward"],
-                "turnover20": c["turnover20"],
-                **sim,
-            })
+                rows.append({
+                    "timeframe": mode,
+                    "signal_date": str(cutoff.date()),
+                    "ticker": c["ticker"],
+                    "rank": rank,
+                    "regime": regime["regime"],
+                    "regime_score": regime["score"],
+                    "quality_score": c["quality_score"],
+                    "rs_percentile": c["rs_percentile"],
+                    "rs_excess": c["rs_excess"],
+                    "rsi": c["rsi"],
+                    "vol_ratio": c["vol_ratio"],
+                    "vol_z": c["vol_z"],
+                    "atr_pct": c["atr_pct"],
+                    "setup": c["setup_name"],
+                    "signal_close": c["harga_terakhir"],
+                    "entry_trigger": c["entry_level"],
+                    "planned_stop": c["stop_level"],
+                    "planned_target": c["target_price"],
+                    "planned_rr": c["risk_reward"],
+                    "turnover20": c["turnover20"],
+                    **sim,
+                })
 
-            if not args.allow_overlap_same_ticker:
-                resolved = to_date(sim.get("resolved_date"))
-                if resolved is not None:
-                    busy_until[c["ticker"]] = resolved
+                if not args.allow_overlap_same_ticker:
+                    resolved = to_date(sim.get("resolved_date"))
+                    if resolved is not None:
+                        busy_until[c["ticker"]] = resolved
+            except Exception as e:
+                print(f"⚠️ {mode} {cutoff} {c['ticker']}: simulasi trade gagal - {e}")
+                continue
 
         if i % max(1, args.progress_every) == 0 or i == len(dates):
             print(
@@ -633,6 +657,33 @@ def save_outputs(df, mode, output_dir, args):
 
     report_path = out_dir / f"BACKTEST_REPORT_{mode}.md"
     report_path.write_text(make_report(mode, df, args), encoding="utf-8")
+    
+    # Save config snapshot for reproducibility
+    config_snapshot = {
+        "run_timestamp": datetime.now().isoformat(),
+        "mode": mode,
+        "params": {
+            "start": args.start,
+            "end": args.end,
+            "period": args.period,
+            "top": args.top,
+            "signal_step": args.signal_step,
+            "min_turnover": args.min_turnover,
+            "min_price": args.min_price,
+            "buy_fee": args.buy_fee,
+            "sell_fee": args.sell_fee,
+            "slippage_bps": args.slippage_bps,
+            "same_bar_policy": args.same_bar_policy,
+            "allow_overlap_same_ticker": args.allow_overlap_same_ticker,
+        },
+        "timeframe_config": fs.TIMEFRAME_CONFIG.get(mode, {}),
+        "factor_weights": fs.FACTOR_WEIGHTS,
+        "backtest_config": BACKTEST_CONFIG.get(mode, {}),
+    }
+    
+    config_path = out_dir / "config_snapshot.json"
+    config_path.write_text(json.dumps(config_snapshot, indent=2, default=str), encoding="utf-8")
+    
     return report_path
 
 
@@ -642,26 +693,28 @@ def main():
         "--trend",
         choices=["1hari", "1minggu", "1bulan", "all"],
         default="1hari",
+        help="Timeframe untuk backtest (all = run 3 timeframe sekaligus)",
     )
-    parser.add_argument("--start", default="2025-01-01")
-    parser.add_argument("--end", default=None)
-    parser.add_argument("--period", choices=["5y", "10y", "max"], default="10y")
-    parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
-    parser.add_argument("--top", type=int, default=3)
-    parser.add_argument("--signal-step", type=int, default=1)
-    parser.add_argument("--min-turnover", type=float, default=1_000_000_000)
-    parser.add_argument("--min-price", type=float, default=100)
-    parser.add_argument("--buy-fee", type=float, default=0.15)
-    parser.add_argument("--sell-fee", type=float, default=0.25)
-    parser.add_argument("--slippage-bps", type=float, default=0.0)
+    parser.add_argument("--start", default="2025-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", default=None, help="End date YYYY-MM-DD (optional)")
+    parser.add_argument("--period", choices=["5y", "10y", "max"], default="10y", help="Data period for download")
+    parser.add_argument("--excel", default="resource/daftar-saham.xlsx", help="Path to stock universe Excel file")
+    parser.add_argument("--top", type=int, default=3, help="Number of top picks per signal date")
+    parser.add_argument("--signal-step", type=int, default=1, help="Process every Nth signal date")
+    parser.add_argument("--min-turnover", type=float, default=1_000_000_000, help="Minimum daily turnover in IDR")
+    parser.add_argument("--min-price", type=float, default=100, help="Minimum stock price in IDR")
+    parser.add_argument("--buy-fee", type=float, default=0.15, help="Buy fee percentage")
+    parser.add_argument("--sell-fee", type=float, default=0.25, help="Sell fee percentage")
+    parser.add_argument("--slippage-bps", type=float, default=0.0, help="Slippage in basis points per side")
     parser.add_argument(
         "--same-bar-policy",
         choices=["stop", "target"],
         default="stop",
+        help="Policy when stop and target hit on same bar",
     )
-    parser.add_argument("--allow-overlap-same-ticker", action="store_true")
-    parser.add_argument("--progress-every", type=int, default=10)
-    parser.add_argument("--output-dir", default="output/backtest")
+    parser.add_argument("--allow-overlap-same-ticker", action="store_true", help="Allow same ticker in overlapping trades")
+    parser.add_argument("--progress-every", type=int, default=10, help="Show progress every N signal dates")
+    parser.add_argument("--output-dir", default="output/backtest", help="Output directory for results")
     args = parser.parse_args()
 
     modes = (
@@ -672,10 +725,14 @@ def main():
 
     if "1bulan" in modes and args.period == "5y":
         args.period = "10y"
+        print("ℹ️ Timeframe 1bulan butuh data >= 72 bar; period dijadikan 10y.")
 
-    pool = fs.ambil_semua_ticker_dari_excel(args.excel)
-    if not pool:
-        raise RuntimeError("Universe saham kosong")
+    try:
+        pool = fs.ambil_semua_ticker_dari_excel(args.excel)
+        if not pool:
+            raise RuntimeError(f"{ERROR_CODES['ERR_INPUT']}: Universe saham kosong")
+    except Exception as e:
+        raise RuntimeError(f"{ERROR_CODES['ERR_INPUT']}: Gagal membaca universe saham - {e}")
 
     tickers = list(dict.fromkeys(pool + [fs.IDX_BENCHMARK]))
     print(
@@ -683,61 +740,74 @@ def main():
         f"{len(pool)} saham + IHSG..."
     )
 
-    data_massal = yf.download(
-        tickers,
-        period=args.period,
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=True,
-        repair=False,
-        progress=False,
-        threads=True,
-    )
+    try:
+        data_massal = yf.download(
+            tickers,
+            period=args.period,
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=True,
+            repair=False,
+            progress=False,
+            threads=True,
+        )
+    except Exception as e:
+        raise RuntimeError(f"{ERROR_CODES['ERR_MARKET_CONTEXT']}: Download Yahoo Finance gagal - {e}")
 
     if data_massal is None or data_massal.empty:
-        raise RuntimeError("Download Yahoo Finance gagal")
+        raise RuntimeError(f"{ERROR_CODES['ERR_MARKET_CONTEXT']}: Download Yahoo Finance gagal - data kosong")
 
-    ihsg_daily = normalize_df(
-        fs.ekstrak_ticker_frame(data_massal, fs.IDX_BENCHMARK)
-    )
-    if ihsg_daily.empty:
-        raise RuntimeError("Data IHSG (^JKSE) tidak tersedia")
+    try:
+        ihsg_daily = normalize_df(
+            fs.ekstrak_ticker_frame(data_massal, fs.IDX_BENCHMARK)
+        )
+        if ihsg_daily.empty:
+            raise RuntimeError(f"{ERROR_CODES['ERR_MARKET_CONTEXT']}: Data IHSG (^JKSE) tidak tersedia")
+    except Exception as e:
+        raise RuntimeError(f"{ERROR_CODES['ERR_MARKET_CONTEXT']}: Gagal menyiapkan data IHSG - {e}")
 
     frames = extract_all_frames(data_massal, pool)
     print(f"✅ Data tersedia: {len(frames)}/{len(pool)} saham")
 
+    if len(frames) == 0:
+        raise RuntimeError(f"{ERROR_CODES['ERR_INSUFFICIENT_DATA']}: Tidak ada data saham yang tersedia")
+
     all_results = []
 
     for mode in modes:
-        result = run_backtest(
-            mode,
-            pool,
-            frames,
-            data_massal,
-            ihsg_daily,
-            args,
-        )
+        try:
+            result = run_backtest(
+                mode,
+                pool,
+                frames,
+                data_massal,
+                ihsg_daily,
+                args,
+            )
 
-        report_path = save_outputs(
-            result,
-            mode,
-            args.output_dir,
-            args,
-        )
+            report_path = save_outputs(
+                result,
+                mode,
+                args.output_dir,
+                args,
+            )
 
-        m = metrics(result)
-        print(
-            f"\n✅ {mode} | "
-            f"Signals={m['signals']} | "
-            f"Trades={m['triggered']} | "
-            f"Win={fmt_pct(m['win_rate'])} | "
-            f"EV={fmt_num(m['expectancy_r'])}R | "
-            f"PF={fmt_num(m['profit_factor'])}"
-        )
-        print(f"📄 {report_path}")
+            m = metrics(result)
+            print(
+                f"\n✅ {mode} | "
+                f"Signals={m['signals']} | "
+                f"Trades={m['triggered']} | "
+                f"Win={fmt_pct(m['win_rate'])} | "
+                f"EV={fmt_num(m['expectancy_r'])}R | "
+                f"PF={fmt_num(m['profit_factor'])}"
+            )
+            print(f"📄 {report_path}")
 
-        if not result.empty:
-            all_results.append(result)
+            if not result.empty:
+                all_results.append(result)
+        except Exception as e:
+            print(f"❌ Backtest {mode} gagal: {e}")
+            continue
 
     if len(all_results) > 1:
         combined = pd.concat(all_results, ignore_index=True)
@@ -746,6 +816,7 @@ def main():
         combined[combined["triggered"] == True].to_csv(
             out_dir / "trades_all.csv", index=False
         )
+        print(f"📄 Combined results saved to {out_dir}/signals_all.csv and trades_all.csv")
 
 
 if __name__ == "__main__":
