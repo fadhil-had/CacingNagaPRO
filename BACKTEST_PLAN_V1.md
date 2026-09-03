@@ -174,7 +174,7 @@ python3 tests/backtest_screener_v1.py --trend weekly_position \
   --holdout-start 2024-01-01 --max-positions 5 --initial-capital 100000000
 
 # Run #4 — Backtest Monthly (baseline monthly_long_term, setting identik):
-python tests/backtest_screener_v1.py --trend monthly_long_term \
+python3 tests/backtest_screener_v1.py --trend monthly_long_term \
   --start 2019-01-01 --end 2024-12-31 --max-tickers 100 --use-cache \
   --holdout-start 2024-01-01 --max-positions 5 --initial-capital 100000000
 ```
