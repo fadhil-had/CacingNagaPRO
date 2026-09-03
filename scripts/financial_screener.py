@@ -106,11 +106,8 @@ TIMEFRAME_CONFIG = {
     },
 }
 
-# Alias legacy -> kanonis (backward compat CLI / backtest lama).
+# Short alias -> kanonis.
 TIMEFRAME_ALIASES = {
-    "1hari": "daily_swing",
-    "1minggu": "weekly_position",
-    "1bulan": "monthly_long_term",
     "daily": "daily_swing",
     "weekly": "weekly_position",
     "monthly": "monthly_long_term",
@@ -136,7 +133,7 @@ STATUS_ALIAS = {
 
 
 def normalize_timeframe(mode_tren: str) -> str:
-    """Kembalikan nama timeframe kanonis; terima alias legacy."""
+    """Kembalikan nama timeframe kanonis; terima short alias daily/weekly/monthly."""
     m = str(mode_tren or "").strip()
     if m in TIMEFRAME_CONFIG:
         return m
@@ -146,7 +143,7 @@ def normalize_timeframe(mode_tren: str) -> str:
 
 
 def get_timeframe_config(mode_tren: str) -> dict:
-    """Ambil config timeframe dengan dukungan alias legacy."""
+    """Ambil config timeframe dengan dukungan short alias."""
     return TIMEFRAME_CONFIG[normalize_timeframe(mode_tren)]
 
 
@@ -164,7 +161,7 @@ def get_max_hold_days(mode_tren: str) -> int:
 
 
 def ambil_hasil_single(hasil: dict, mode_tren: str) -> dict:
-    """Ambil entry hasil single-ticker dengan dukungan alias legacy."""
+    """Ambil entry hasil single-ticker dengan dukungan short alias."""
     mode = normalize_timeframe(mode_tren)
     entry = hasil.get(mode, {})
     if entry:
@@ -1718,15 +1715,11 @@ def main():
             "daily_swing",
             "weekly_position",
             "monthly_long_term",
-            "1hari",
-            "1minggu",
-            "1bulan",
             "all",
         ],
         default="daily_swing",
         help=(
-            "daily_swing/weekly_position/monthly_long_term = rekomendasi saham sesuai timeframe "
-            "(alias legacy 1hari/1minggu/1bulan tetap didukung). "
+            "daily_swing/weekly_position/monthly_long_term = rekomendasi saham sesuai timeframe. "
             "all = WAJIB digabung dengan --ticker <kode> untuk analisis 3 timeframe 1 saham."
         ),
     )
@@ -1746,7 +1739,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-csv", default="output/idx-screening.csv")
     args = parser.parse_args()
-    # Normalisasi sekali: alias legacy tetap diterima tapi pipeline selalu kanonis.
+    # Normalisasi sekali: short alias tetap diterima tapi pipeline selalu kanonis.
     if args.trend != "all":
         args.trend = normalize_timeframe(args.trend)
 

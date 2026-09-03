@@ -25,11 +25,11 @@ BACKTEST_CONFIG = {
     "monthly_long_term": {"entry_window": 10, "max_hold": 126},
 }
 
-# Alias legacy -> kanonis (CLI lama tetap jalan, pipeline selalu kanonis).
+# Short alias -> kanonis.
 BACKTEST_ALIASES = {
-    "1hari": "daily_swing",
-    "1minggu": "weekly_position",
-    "1bulan": "monthly_long_term",
+    "daily": "daily_swing",
+    "weekly": "weekly_position",
+    "monthly": "monthly_long_term",
 }
 
 
@@ -732,13 +732,10 @@ def main():
             "daily_swing",
             "weekly_position",
             "monthly_long_term",
-            "1hari",
-            "1minggu",
-            "1bulan",
             "all",
         ],
         default="daily_swing",
-        help="Timeframe untuk backtest (all = run 3 timeframe sekaligus; alias legacy 1hari/1minggu/1bulan tetap didukung)",
+        help="Timeframe untuk backtest (all = run 3 timeframe sekaligus)",
     )
     parser.add_argument("--start", default="2025-01-01", help="Start date YYYY-MM-DD")
     parser.add_argument("--end", default=None, help="End date YYYY-MM-DD (optional)")

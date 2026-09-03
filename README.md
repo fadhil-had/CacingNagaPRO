@@ -1,12 +1,12 @@
 # 📈 CacingNagaPRO - Multi-Factor IDX Stock Screener
 
-Sistem automasi pemindaian saham IHSG berbasis **Multi-Factor Confluence** dengan **Gemini AI** & GitHub Actions. Fokus pada **3 timeframe utama** (1hari, 1minggu, 1bulan).
+Sistem automasi pemindaian saham IHSG berbasis **Multi-Factor Confluence** dengan **Gemini AI** & GitHub Actions. Fokus pada **3 timeframe utama** (daily_swing, weekly_position, monthly_long_term).
 
 ---
 
 ## 🧠 Strategi (Multi-Factor)
 
-Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters & score ≥threshold menjadi **Strong Buy**.
+Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters & score ≥threshold menjadi **Ready to Enter**.
 
 ### Faktor yang Dievaluasi
 
@@ -23,11 +23,11 @@ Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters &
 
 ### Timeframe
 
-| Mode | Trader | Hold | Threshold |
+| Mode | Trader | Max Hold V1 (time-stop) | Threshold |
 | :--- | :--- | :--- | :--- |
-| **1hari** | Day | 1-20 bar | ≥72/100 |
-| **1minggu** | Swing | 1-65 bar | ≥70/100 |
-| **1bulan** | Position | 1-252 bar | ≥68/100 |
+| **daily_swing** | Day / Short swing | 10 trading days (10 bar daily) | ≥72/100 |
+| **weekly_position** | Swing / Medium position | 8 minggu (8 bar weekly = 40 hari bursa) | ≥70/100 |
+| **monthly_long_term** | Position / Long-term | 6 bulan (6 bar monthly = 126 hari bursa) | ≥68/100 |
 
 ---
 
@@ -37,9 +37,9 @@ Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters &
 
 | TF | Stop | Target | Min R:R |
 | :--- | :--- | :--- | :--- |
-| 1hari | 1.5× ATR | 2× ATR | 1.5:1 |
-| 1minggu | 2.0× ATR | 3× ATR | 2.0:1 |
-| 1bulan | 2.5× ATR | 4× ATR | 2.5:1 |
+| daily_swing | 1.5× ATR | 2× ATR | 1.5:1 |
+| weekly_position | 2.0× ATR | 3× ATR | 2.0:1 |
+| monthly_long_term | 2.5× ATR | 4× ATR | 2.5:1 |
 
 **Universe:** 900+ saham IDX dari `resource/daftar-saham.xlsx`
 
@@ -53,14 +53,14 @@ Setiap saham di-score dari beberapa faktor kunci. Hanya yang pass hard filters &
 # Hasil → GitHub Step Summary + output/idx-screening.csv
 
 # Manual lokal (3 rekomendasi terbaik sesuai indikator timeframe + analisa):
-python scripts/financial_screener.py --trend 1hari
-python scripts/financial_screener.py --trend 1minggu
-python scripts/financial_screener.py --trend 1bulan
+python scripts/financial_screener.py --trend daily_swing
+python scripts/financial_screener.py --trend weekly_position
+python scripts/financial_screener.py --trend monthly_long_term
 ```
 
 ### Mode 2 — `all` + kode saham → hasil 3 timeframe + analisa
 ```bash
-# Analisis 1 saham di 3 timeframe sekaligus (1hari / 1minggu / 1bulan):
+# Analisis 1 saham di 3 timeframe sekaligus (daily_swing / weekly_position / monthly_long_term):
 python scripts/financial_screener.py --trend all --ticker BBCA
 python scripts/financial_screener.py --trend all --ticker BBCA.JK --capital 25_000_000
 
@@ -71,11 +71,11 @@ python scripts/financial_screener.py --trend all --ticker BBCA.JK --capital 25_0
 ```bash
 python scripts/financial_screener.py --trend all
 # ❌ Jangan semua timeframe, berat.
-#    Pilih satu timeframe (1hari/1minggu/1bulan) atau kombinasikan --trend all --ticker <kode>.
+#    Pilih satu timeframe (daily_swing/weekly_position/monthly_long_term) atau kombinasikan --trend all --ticker <kode>.
 ```
 
 > Aturan:
-> - `--trend 1hari|1minggu|1bulan` (tanpa `--ticker`) → rekomendasi 3 saham + analisa.
+> - `--trend daily_swing|weekly_position|monthly_long_term` (tanpa `--ticker`) → rekomendasi 3 saham + analisa.
 > - `--trend all --ticker <kode>` → analisis 1 saham di 3 timeframe + analisa.
 > - `--trend all` tanpa `--ticker`, atau `--trend <timeframe>` dengan `--ticker` → error.
 
@@ -88,14 +88,14 @@ python scripts/financial_screener.py --trend all
 
 # Manual lokal:
 python tests/test_financial_screener.py \
-  --trend 1hari \
+  --trend daily_swing \
   --start 2025-01-01 \
   --end 2025-08-18
 
 # Output: output/backtest/
-#   - signals_1hari.csv (semua signals)
-#   - trades_1hari.csv (triggered only)
-#   - BACKTEST_REPORT_1hari.md (summary)
+#   - signals_daily_swing.csv (semua signals)
+#   - trades_daily_swing.csv (triggered only)
+#   - BACKTEST_REPORT_daily_swing.md (summary)
 #   - summary_*.csv (grouped metrics)
 ```
 
@@ -111,7 +111,7 @@ scripts/
 tests/
   └── test_financial_screener.py ← Backtest engine
 .github/workflows/
-  ├── financial_screener.yml     ← Daily live (1hari) + manual (mode 1/2)
+  ├── financial_screener.yml     ← Daily live (daily_swing) + manual (mode 1/2)
   └── backtest-matrix.yml        ← Backtest 3 timeframe
 resource/
   └── daftar-saham.xlsx          ← IDX universe (900+)

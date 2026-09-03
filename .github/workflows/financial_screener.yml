@@ -16,9 +16,6 @@ on:
           - daily_swing
           - weekly_position
           - monthly_long_term
-          - 1hari
-          - 1minggu
-          - 1bulan
           - all
       ticker:
         description: 'Kode saham (opsional, hanya bersama trend_mode=all) untuk analisis 3 timeframe'
