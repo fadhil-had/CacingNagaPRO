@@ -41,87 +41,58 @@
 
 ## 3. Metodologi Testing Screening
 
-### Step 1: Baseline Screening Performance
-Jalankan screener pada data historis dan ukur performa rekomendasi:
-
+### Step 1: Jalankan 3 Command untuk Setiap Timeframe
 ```bash
-# Backtest screening performance harian
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
-
-# Backtest screening performance mingguan
-python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
-
-# Backtest screening performance bulanan
-python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
+# Backtest ketiga timeframe secara terpisah
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1bulan
 ```
 
-### Step 2: Analisis Hasil Screening
-Untuk setiap timeframe, analisis:
+### Step 2: Analisis Hasil Screening secara Komprehensif
+Buka semua file yang dihasilkan dan bandingkan:
 
-**Screening Accuracy:**
-- Berapa persen rekomendasi yang profit?
-- Berapa persen rekomendasi yang mencapai target?
-- Berapa persen rekomendasi yang stop loss?
+**Screening Accuracy Comparison:**
+- `BACKTEST_REPORT_1hari.md` vs `BACKTEST_REPORT_1minggu.md` vs `BACKTEST_REPORT_1bulan.md`
+- Timeframe mana yang paling akurat?
 
-**Factor Contribution:**
-- Faktor mana yang paling akurat dalam mengidentifikasi saham profitable?
-- Bobot faktor saat ini sudah optimal atau perlu adjustment?
-- Kombinasi faktor mana yang memberikan win rate tertinggi?
+**Factor Analysis:**
+- `summary_setup_1hari.csv` vs `summary_setup_1minggu.csv` vs `summary_setup_1bulan.csv`
+- Setup type mana yang paling profitable across timeframes?
 
-**Market Condition Impact:**
-- Apakah screener bekerja dengan baik di semua market regime?
-- Regime mana yang screener paling/least akurat?
-- Apakah perlu adjust criteria berdasarkan market condition?
+**Market Condition:**
+- `summary_regime_1hari.csv` vs `summary_regime_1minggu.csv` vs `summary_regime_1bulan.csv`
+- Regime mana yang paling/least akurat?
 
 ### Step 3: Identifikasi Improvement Areas
-Berdasarkan hasil analysis, identifikasi:
+Dari comprehensive analysis, tentukan:
 
-**Jika Screening Accuracy < 45%:**
-- Criteria screening terlalu longgar → naikkan threshold
-- Faktor teknikal kurang akurat → adjust bobot atau ganti faktor
-- Market timing salah → adjust timeframe atau entry criteria
+**Jika semua timeframe accuracy < 45%:**
+- Screening methodology fundamental need adjustment
+- Adjust factor weights secara drastis
+- Consider ubah timeframe prioritization
 
-**Jika Win Rate > 45% tapi Expectancy < 0.5R:**
-- R:R ratio tidak optimal → adjust stop/target
-- Entry timing tidak akurat → add confirmation factors
-- Position sizing tidak sesuai → adjust risk management
+**Jika satu timeframe jauh lebih baik:**
+- Focus pada timeframe tersebut untuk live trading
+- Understand why timeframe tersebut lebih akurat
+- Apply lessons dari timeframe tersebut ke timeframe lain
 
-**Jika Performance Beragam Across Regime:**
-- Tambahkan regime-based adjustment
-- Reduce exposure di regime dengan perform buruk
-- Add regime filter untuk screening
+**Jika specific factors consistently accurate:**
+- Increase weights untuk factors tersebut
+- Reduce/remove factors yang noisy
+- Simplify methodology hanya dengan faktor yang terbukti akurat
 
-### Step 4: Optimasi Screening Methodology
-Implement perubahan berdasarkan analysis:
-
-**Adjust Threshold:**
-- Naikkan/lower quality score threshold
-- Adjust individual factor thresholds (RSI range, ATR% range, dll)
-- Modify relative strength percentile requirement
-
-**Optimize Factor Weights:**
-- Beri bobot lebih tinggi untuk faktor yang akurat
-- Kurangi bobot untuk faktor yang noisy/less accurate
-- Tambah/hapus faktor berdasarkan contribution analysis
-
-**Improve Entry/Exit Criteria:**
-- Adjust entry trigger untuk mengurangi false signals
-- Optimize stop loss placement untuk reduce unnecessary exits
-- Improve target taking untuk maximize profitable exits
-
-### Step 5: Validasi Improvement
-Jalankan ulang screening dengan methodology baru:
+### Step 4: Optimasi dan Re-test
+Modifikasi parameter di `financial_screener.py` lalu jalankan ulang:
 
 ```bash
 # Test screening methodology yang dioptimasi
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_optimized/1hari
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1bulan
 ```
 
-Bandingkan dengan baseline:
-- Apakah screening accuracy meningkat?
-- Apakah win rate meningkat?
-- Apakah expectancy meningkat?
-- Apakah improvement signifikan dan bukan kebetulan?
+Bandingkan hasil sebelum vs sesudah improvement.
 
 ## 4. Analisis Detail Screening Results
 
@@ -236,52 +207,24 @@ BASELINE → ANALYZE → OPTIMIZE → VALIDATE → REPEAT
 - Expectancy > 1.0R
 - Profit factor > 2.0
 
-## 6. Practical Screening Testing Commands
+## 6. Simple Testing Commands
 
-### Baseline Screening Tests
+### 3 Command untuk Semua Timeframes (Universe Screening)
 ```bash
-# Quick screening test (1 tahun data)
-python3 tests/test_financial_screener.py --trend 1hari --start 2023-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_test/quick
-
-# Full screening baseline (3 tahun data harian)
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
-
-# Weekly screening baseline
-python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
-
-# Monthly screening baseline
-python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
-
-# All timeframes screening test
-python3 tests/test_financial_screener.py --trend all --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/all
+# Backtest semua timeframes untuk universe screening
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1bulan
 ```
 
-### Screening Parameter Tests
-```bash
-# Test different number of recommendations
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 5 --signal-step 1 --output-dir output/screening_test/top5
+**Catatan Penting (Sesuai README.md):**
+- `--trend all` HANYA untuk 1 saham spesifik (harus dengan `--ticker`)
+- Untuk universe screening semua saham, gunakan `--trend 1hari/1minggu/1bulan` tanpa `--ticker`
 
-# Test different screening frequency (every 5th signal)
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 5 --output-dir output/screening_test/step5
-
-# Test with higher quality threshold (manual adjustment in code)
-# Edit TIMEFRAME_CONFIG for higher strong_buy_score threshold
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_test/high_threshold
-```
-
-### Current Screening (Live)
+### Live Screening (Harian)
 ```bash
 # Daily screening untuk hari ini
 python3 scripts/financial_screener.py --trend 1hari
-
-# Weekly screening
-python3 scripts/financial_screener.py --trend 1minggu
-
-# Monthly screening
-python3 scripts/financial_screener.py --trend 1bulan
-
-# Single stock analysis (untuk validation manual)
-python3 scripts/financial_screener.py --trend all --ticker BBCA
 ```
 
 ## 7. Analysis of Screening Results
@@ -480,108 +423,42 @@ python3 scripts/financial_screener.py --trend all --ticker BBCA
 
 ## 10. Implementation Roadmap
 
-### Phase 1: Baseline Screening Performance (Week 1)
-**Target:** Dapatkan baseline performance screening methodology saat ini
+### Step 1: Baseline Performance (Sekarang)
+**Target:** Dapatkan baseline performance screener saat ini
 
-**Actions:**
-1. Jalankan backtest untuk ketiga timeframe
-2. Analisis screening accuracy untuk setiap timeframe
-3. Identify baseline performance metrics
-4. Document factors yang bekerja/tidak bekerja
+**3 Commands untuk Baseline:**
+```bash
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1bulan
+```
+
+**Analisis:** Baca semua reports dan summary files untuk baseline performance
+
+### Step 2: Optimasi Berdasarkan Data (Setelah Baseline)
+**Target:** Improve screening methodology berdasarkan hasil analysis
+
+**Process:**
+1. Modifikasi parameter di `financial_screener.py` (thresholds, weights, dll)
+2. Jalankan ulang dengan nama folder baru
+3. Bandingkan hasil dengan baseline
 
 **Commands:**
 ```bash
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
-python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1minggu
-python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1bulan
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v2/1bulan
 ```
 
-**Expected Output:**
-- Baseline screening accuracy untuk setiap timeframe
-- Identifikasi factors yang paling/least akurat
-- Understanding of performance berdasarkan market conditions
+**Ulangi sampai target tercapai:**
+- `output/screening_v3/1hari`, `output/screening_v3/1minggu`, `output/screening_v3/1bulan`
+- `output/screening_v4/1hari`, `output/screening_v4/1minggu`, `output/screening_v4/1bulan`
+- dst.
 
-### Phase 2: Factor Analysis & Optimization (Week 2-3)
-**Target:** Optimasi screening methodology berdasarkan baseline analysis
-
-**Actions:**
-1. Deep dive analysis dari CSV summary files
-2. Identify factors yang paling korelasi dengan profitable outcomes
-3. Adjust factor weights berdasarkan contribution analysis
-4. Test modification dengan backtest ulang
-
-**Commands:**
-```bash
-# Modify factor weights in financial_screener.py based on analysis
-# Then re-test
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_optimized/1hari
-```
-
-**Expected Output:**
-- Improved screening accuracy vs baseline
-- Understanding factor contribution yang optimal
-- Methodology yang lebih akurat untuk stock selection
-
-### Phase 3: Threshold & Parameter Tuning (Week 4)
-**Target:** Optimize thresholds dan screening parameters
-
-**Actions:**
-1. Adjust quality score thresholds
-2. Optimize individual factor thresholds (RSI, ATR%, volume, dll)
-3. Test dengan berbagai parameter combinations
-4. Validate improvement signifikan dan bukan over-fitting
-
-**Commands:**
-```bash
-# Test dengan berbagai thresholds
-# Modify TIMEFRAME_CONFIG thresholds in financial_screener.py
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_tuned/1hari
-```
-
-**Expected Output:**
-- Optimized thresholds untuk screening
-- Reduced false signals
-- Improved signal-to-trade conversion
-
-### Phase 4: Market Condition Adaptation (Week 5-6)
-**Target:** Add regime-based adjustment untuk screening
-
-**Actions:**
-1. Analyze performance berdasarkan market regime
-2. Implement regime-based adjustments
-3. Add filters untuk unfavorable conditions
-4. Test robustness across market conditions
-
-**Commands:**
-```bash
-# Test dengan regime-based adjustment
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_regime/1hari
-```
-
-**Expected Output:**
-- More consistent performance across market conditions
-- Reduced drawdown di unfavorable conditions
-- Robust screening methodology
-
-### Phase 5: Final Validation & Live Testing (Week 7-8)
-**Target:** Validasi screening methodology untuk live implementation
-
-**Actions:**
-1. Comprehensive backtest di multiple periods
-2. Out-of-sample testing
-3. Paper trading validation
-4. Final methodology documentation
-
-**Commands:**
-```bash
-# Final comprehensive test
-python3 tests/test_financial_screener.py --trend all --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_final/all
-```
-
-**Expected Output:**
-- Validated screening methodology
-- Documentation dari optimal parameters
-- Ready untuk live implementation
+### Success Criteria:
+- Screening accuracy > 50% untuk best timeframe
+- Win rate > 50% untuk best timeframe
+- Expectancy > 0.8R untuk best timeframe
 
 ## 11. Summary & Next Steps
 
@@ -594,25 +471,22 @@ python3 tests/test_financial_screener.py --trend all --start 2020-01-01 --end 20
 
 ### Immediate Next Steps
 
-**1. Jalankan Baseline Screening Test (Hari Ini):**
+**1. Jalankan Baseline Screening Test (Sekarang):**
 ```bash
-python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_baseline/1hari
+python3 tests/test_financial_screener.py --trend 1hari --start 2022-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1hari
+python3 tests/test_financial_screener.py --trend 1minggu --start 2020-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1minggu
+python3 tests/test_financial_screener.py --trend 1bulan --start 2018-01-01 --end 2024-12-31 --top 3 --signal-step 1 --output-dir output/screening_v1/1bulan
 ```
 
-**2. Review Screening Accuracy:**
-- Baca `BACKTEST_REPORT_1hari.md` - apakah screening accuracy > 40%?
-- Buka `signals_1hari.csv` - berapa banyak rekomendasi yang profit?
-- Buka `trades_1hari.csv` - berapa banyak yang dieksekusi dan hasilnya?
+**2. Review Semua Hasil Sekaligus:**
+- Baca semua `BACKTEST_REPORT_*.md` files - bandingkan performance 3 timeframe
+- Buka semua `summary_*.csv` files - identify factors yang paling akurat
+- Tentukan timeframe mana yang paling akurat untuk live trading
 
-**3. Analyze Factor Performance:**
-- Buka `summary_setup_1hari.csv` - setup mana yang paling akurat?
-- Buka `summary_regime_1hari.csv` - regime mana yang screening paling profitable?
-- Buka `summary_score_1hari.csv` - quality score range mana yang paling presiktif?
-
-**4. Decide on Next Action:**
-- Jika screening accuracy sudah baik → test timeframes lain dan live
-- Jika screening accuracy kurang → adjust methodology dan re-test
-- Jika performance sangat variatif → add regime-based adjustment
+**3. Decide on Next Action:**
+- Jika salah satu timeframe sudah >50% accuracy → use untuk live trading
+- Jika semua timeframe masih kurang → adjust methodology dan re-test sebagai `screening_v2`
+- Jika ingin improve further → optimize parameters dan re-test
 
 ### Success Definition
 **Screening Methodology Sukses Jika:**
