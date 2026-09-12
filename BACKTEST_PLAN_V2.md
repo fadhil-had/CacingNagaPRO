@@ -205,9 +205,10 @@ Every V2 run writes:
   costs, execution policy, and fold.
 - `signals.csv`: all candidates, status transitions, trigger deadline, and
   factor diagnostics.
-- `orders.csv`: submitted, triggered, cancelled, and rejection reason.
-- `trades.csv`: gross/net fills, costs, exits, holding sessions, IHSG return,
-  and excess return.
+- `trades.csv`: audit order dan hasil simulasi. Kolom `order_status` menyimpan
+  status triggered/cancelled atau alasan penolakan; order yang terpicu juga
+  menyimpan gross/net fills, costs, exits, holding sessions, IHSG return, dan
+  excess return.
 - `summary.csv`, `breakdown.csv`, `portfolio_summary.csv`, and
   `portfolio_equity_curve.csv`: all with fold and cost scenario columns.
 - `backtest_analysis.md`: failed gates, bias flags, and the explicit next

@@ -152,9 +152,13 @@ def build_snapshot_history(
         }, index=index)
 
         liquidity_daily = frame.dropna(subset=["Close", "Volume"])
+<<<<<<< HEAD:tests/backtest_data.py
         # Match the screener's causal liquidity filter: a signal candle must
         # not make itself eligible by inflating its own turnover median.
         turnover = (liquidity_daily["Close"] * liquidity_daily["Volume"]).shift(1)
+=======
+        turnover = (liquidity_daily["Close"] * liquidity_daily["Volume"])
+>>>>>>> 0ae138d (Update to be v8):tests/backtest_screener_v1.py
         liquidity[ticker] = pd.DataFrame({
             "turnover20": turnover.rolling(20, min_periods=20).median(),
             "turnover60": turnover.rolling(60, min_periods=1).median(),
@@ -372,6 +376,7 @@ def evaluation_dates(
     return selected
 
 
+<<<<<<< HEAD:tests/backtest_data.py
 def rank_candidates(
     screener: ModuleType,
     candidates: list[dict],
@@ -384,11 +389,18 @@ def rank_candidates(
     accepted = (ready_status(screener),) if ready_only else (
         ready_status(screener), wait_status(screener)
     )
+=======
+def rank_candidates(screener: ModuleType, candidates: list[dict]) -> list[dict]:
+>>>>>>> 0ae138d (Update to be v8):tests/backtest_screener_v1.py
     if getattr(screener, "GLOBAL_RANKING", False):
         group = [
             candidate for candidate in candidates
             if normalize_status(screener, candidate.get("status", ""))
+<<<<<<< HEAD:tests/backtest_data.py
             in accepted
+=======
+            in (ready_status(screener), wait_status(screener))
+>>>>>>> 0ae138d (Update to be v8):tests/backtest_screener_v1.py
         ]
         ranked, _ = screener.ranking_candidates(group, limit=len(group))
         result = []
@@ -401,6 +413,10 @@ def rank_candidates(
             result.append(copy)
         return result
 
+<<<<<<< HEAD:tests/backtest_data.py
+=======
+    accepted = (ready_status(screener), wait_status(screener))
+>>>>>>> 0ae138d (Update to be v8):tests/backtest_screener_v1.py
     ranked: list[dict] = []
 
     for status in accepted:
