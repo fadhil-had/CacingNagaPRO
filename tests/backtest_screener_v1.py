@@ -78,6 +78,138 @@ class RunConfig:
     min_selection_trades: int
 
 
+@dataclass
+class SnapshotHistory:
+    """Causal, full-history features reused by every point-in-time snapshot."""
+
+    prepared_stocks: dict[str, dict[str, pd.DataFrame]]
+    prepared_ihsg: dict[str, pd.DataFrame]
+    liquidity: dict[str, pd.DataFrame]
+    breadth: pd.DataFrame
+    breadth_components: dict[str, pd.DataFrame]
+
+
+def build_snapshot_history(
+    screener: ModuleType,
+    pool: list[str],
+    stock_frames: dict[str, pd.DataFrame],
+    ihsg: pd.DataFrame,
+    timeframes: tuple[str, ...] = tuple(TIMEFRAME_HOLDS),
+) -> SnapshotHistory:
+    """Precompute causal features without allowing a snapshot to see the future.
+
+    Indicators (EMA, RSI, ATR, rolling support) depend only on current and past
+    rows.  For a snapshot we still slice the prepared frame at ``screen_date``;
+    this is mathematically the same result as preparing that historical prefix,
+    but avoids millions of repeated rolling calculations.
+    """
+    index = pd.DatetimeIndex(ihsg.index)
+    valid50 = pd.Series(0, index=index, dtype="int32")
+    above50 = pd.Series(0, index=index, dtype="int32")
+    valid200 = pd.Series(0, index=index, dtype="int32")
+    above200 = pd.Series(0, index=index, dtype="int32")
+    return20: list[pd.Series] = []
+    liquidity: dict[str, pd.DataFrame] = {}
+    breadth_components: dict[str, pd.DataFrame] = {}
+
+    for ticker in pool:
+        frame = stock_frames.get(ticker)
+        if frame is None or frame.empty:
+            continue
+        # Breadth follows the screener's close-only rule; liquidity separately
+        # requires volume, exactly as ``hitung_daily_liquidity`` does.
+        daily = frame.dropna(subset=["Close"])
+        # Do the per-ticker history before aligning to IHSG.  Some listings
+        # have valid observations before the benchmark's first cached date;
+        # they count towards the legacy 60/220-row eligibility checks.
+        compact_close = daily["Close"].dropna()
+        # A suspended/non-trading stock remains part of the legacy snapshot and
+        # contributes its most recent completed candle.  Carry values forward
+        # across benchmark sessions so the cached path preserves that rule.
+        close = compact_close.reindex(index, method="ffill")
+        observations = pd.Series(
+            np.arange(1, len(compact_close) + 1), index=compact_close.index,
+        ).reindex(index, method="ffill")
+        ema50 = compact_close.ewm(span=50, adjust=False).mean().reindex(index, method="ffill")
+        ema200 = compact_close.ewm(span=200, adjust=False).mean().reindex(index, method="ffill")
+        eligible50 = close.notna() & observations.ge(60)
+        eligible200 = close.notna() & observations.ge(220)
+        valid50 += eligible50.astype("int32")
+        above50 += (eligible50 & close.gt(ema50)).astype("int32")
+        valid200 += eligible200.astype("int32")
+        above200 += (eligible200 & close.gt(ema200)).astype("int32")
+        return20_value = (
+            (compact_close / compact_close.shift(20) - 1)
+            .reindex(index, method="ffill")
+            .where(observations.ge(60))
+        )
+        return20.append(return20_value)
+        breadth_components[ticker] = pd.DataFrame({
+            "valid50": eligible50,
+            "above50": eligible50 & close.gt(ema50),
+            "valid200": eligible200,
+            "above200": eligible200 & close.gt(ema200),
+            "return20": return20_value,
+        }, index=index)
+
+        liquidity_daily = frame.dropna(subset=["Close", "Volume"])
+        turnover = (liquidity_daily["Close"] * liquidity_daily["Volume"])
+        liquidity[ticker] = pd.DataFrame({
+            "turnover20": turnover.rolling(20, min_periods=20).median(),
+            "turnover60": turnover.rolling(60, min_periods=1).median(),
+        }).reindex(index, method="ffill")
+
+    returns = pd.concat(return20, axis=1) if return20 else pd.DataFrame(index=index)
+    breadth = pd.DataFrame({
+        "breadth50": above50 / valid50.replace(0, np.nan),
+        "breadth200": above200 / valid200.replace(0, np.nan),
+        "median_return20": returns.median(axis=1, skipna=True),
+        "jumlah_saham_breadth": valid50,
+    }, index=index)
+
+    prepared_ihsg = {
+        timeframe: screener.siapkan_data_untuk_timeframe(ihsg, timeframe)
+        for timeframe in timeframes
+    }
+    prepared_stocks: dict[str, dict[str, pd.DataFrame]] = {}
+    for ticker, frame in stock_frames.items():
+        per_timeframe: dict[str, pd.DataFrame] = {}
+        for timeframe in timeframes:
+            try:
+                per_timeframe[timeframe] = screener.siapkan_data_untuk_timeframe(frame, timeframe)
+            except ValueError:
+                # A frame which has too little history would fail in the legacy
+                # path too; omit it and let the snapshot skip the ticker.
+                continue
+        prepared_stocks[ticker] = per_timeframe
+    return SnapshotHistory(prepared_stocks, prepared_ihsg, liquidity, breadth, breadth_components)
+
+
+def breadth_from_history(
+    history: SnapshotHistory, pool: list[str], screen_date: pd.Timestamp,
+) -> dict:
+    """Calculate breadth for a date-specific membership universe from cached data."""
+    valid50 = above50 = valid200 = above200 = 0
+    returns: list[float] = []
+    for ticker in pool:
+        component = history.breadth_components.get(ticker)
+        if component is None or screen_date not in component.index:
+            continue
+        row = component.loc[screen_date]
+        valid50 += int(row.valid50)
+        above50 += int(row.above50)
+        valid200 += int(row.valid200)
+        above200 += int(row.above200)
+        if pd.notna(row.return20):
+            returns.append(float(row.return20))
+    return {
+        "breadth50": above50 / valid50 if valid50 else np.nan,
+        "breadth200": above200 / valid200 if valid200 else np.nan,
+        "median_return20": float(np.median(returns)) if returns else np.nan,
+        "jumlah_saham_breadth": valid50,
+    }
+
+
 def load_screener(path: Path) -> ModuleType:
     """Load a Python source file even when its extension is .txt."""
     if not path.is_file():
@@ -153,13 +285,16 @@ def load_market_data(
     if use_cache and path.is_file():
         with path.open("rb") as handle:
             payload = pickle.load(handle)
-        print(f"Using market-data cache: {path}")
         ihsg = normalize_daily(payload["ihsg"])
         stocks = {
             ticker: normalize_daily(frame)
             for ticker, frame in payload["stocks"].items()
         }
-        return ihsg, stocks, path
+        stocks = {ticker: frame for ticker, frame in stocks.items() if not frame.empty}
+        if not ihsg.empty and stocks:
+            print(f"Using market-data cache: {path}")
+            return ihsg, stocks, path
+        print(f"Ignoring empty or invalid market-data cache: {path}")
 
     print(f"Downloading IHSG and {len(pool):,} stock histories...")
     ihsg = normalize_daily(screener.download_ihsg(period))
@@ -170,6 +305,9 @@ def load_market_data(
         ).items()
     }
     stocks = {ticker: frame for ticker, frame in stocks.items() if not frame.empty}
+
+    if ihsg.empty or not stocks:
+        raise RuntimeError("Market-data download returned an empty IHSG or stock universe")
 
     if use_cache:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -233,6 +371,23 @@ def evaluation_dates(
 
 
 def rank_candidates(screener: ModuleType, candidates: list[dict]) -> list[dict]:
+    if getattr(screener, "GLOBAL_RANKING", False):
+        group = [
+            candidate for candidate in candidates
+            if normalize_status(screener, candidate.get("status", ""))
+            in (ready_status(screener), wait_status(screener))
+        ]
+        ranked, _ = screener.ranking_candidates(group, limit=len(group))
+        result = []
+        for rank, candidate in enumerate(ranked, start=1):
+            copy = dict(candidate)
+            copy["normalized_status"] = normalize_status(
+                screener, candidate.get("status", ""),
+            )
+            copy["status_rank"] = rank
+            result.append(copy)
+        return result
+
     accepted = (ready_status(screener), wait_status(screener))
     ranked: list[dict] = []
 
@@ -261,30 +416,68 @@ def screen_snapshot(
     timeframe: str,
     config: RunConfig,
     executor: Executor | None = None,
+    history: SnapshotHistory | None = None,
+    dynamic_breadth: bool = False,
+    breadth_history: pd.DataFrame | None = None,
 ) -> tuple[list[dict], dict]:
-    ihsg_snapshot = ihsg.loc[:screen_date]
-    frame_snapshots = {
-        ticker: frame.loc[:screen_date]
-        for ticker, frame in stock_frames.items()
-        if not frame.loc[:screen_date].empty
-    }
-
-    breadth = screener.hitung_market_breadth_from_frames(frame_snapshots, pool)
-    ihsg_tf = screener.siapkan_data_untuk_timeframe(ihsg_snapshot, timeframe)
-    regime = screener.analisa_market_regime(ihsg_snapshot, timeframe, breadth)
+    if history is None:
+        ihsg_snapshot = ihsg.loc[:screen_date]
+        frame_snapshots = {
+            ticker: frame.loc[:screen_date]
+            for ticker, frame in stock_frames.items()
+            if not frame.loc[:screen_date].empty
+        }
+        breadth = screener.hitung_market_breadth_from_frames(frame_snapshots, pool)
+        ihsg_tf = screener.siapkan_data_untuk_timeframe(ihsg_snapshot, timeframe)
+        regime = screener.analisa_market_regime(ihsg_snapshot, timeframe, breadth)
+    else:
+        frame_snapshots = {}
+        if breadth_history is not None:
+            breadth_row = breadth_history.loc[screen_date]
+            breadth = {
+                "breadth50": float(breadth_row.breadth50),
+                "breadth200": float(breadth_row.breadth200),
+                "median_return20": float(breadth_row.median_return20),
+                "jumlah_saham_breadth": int(breadth_row.jumlah_saham_breadth),
+            }
+        elif dynamic_breadth:
+            breadth = breadth_from_history(history, pool, screen_date)
+        else:
+            breadth_row = history.breadth.loc[screen_date]
+            breadth = {
+                "breadth50": float(breadth_row.breadth50),
+                "breadth200": float(breadth_row.breadth200),
+                "median_return20": float(breadth_row.median_return20),
+                "jumlah_saham_breadth": int(breadth_row.jumlah_saham_breadth),
+            }
+        ihsg_snapshot = ihsg.loc[:screen_date]
+        ihsg_tf = history.prepared_ihsg[timeframe].loc[:screen_date]
+        regime = screener.analisa_market_regime(ihsg_snapshot, timeframe, breadth)
 
     def analyze(ticker: str) -> dict | None:
-        stock_snapshot = frame_snapshots.get(ticker)
-        if stock_snapshot is None or stock_snapshot.empty:
-            return None
-        result = screener.analisa_saham_confluence(
-            ticker,
-            stock_snapshot,
-            ihsg_tf,
-            timeframe,
-            config.min_turnover,
-            config.min_price,
-        )
+        if history is None:
+            stock_snapshot = frame_snapshots.get(ticker)
+            if stock_snapshot is None or stock_snapshot.empty:
+                return None
+            result = screener.analisa_saham_confluence(
+                ticker, stock_snapshot, ihsg_tf, timeframe,
+                config.min_turnover, config.min_price,
+            )
+        else:
+            prepared = history.prepared_stocks.get(ticker, {}).get(timeframe)
+            liquidity = history.liquidity.get(ticker)
+            if prepared is None or liquidity is None:
+                return None
+            prepared = prepared.loc[:screen_date]
+            minimum_rows = screener.get_timeframe_config(timeframe)["min_rows"]
+            if prepared.empty or len(prepared) < minimum_rows:
+                return None
+            liquidity_row = liquidity.loc[screen_date]
+            result = screener.analisa_saham_confluence(
+                ticker, None, ihsg_tf, timeframe, config.min_turnover,
+                config.min_price, prepared_tf=prepared,
+                liquidity=(float(liquidity_row.turnover20), float(liquidity_row.turnover60)),
+            )
         return None if result.get("error") else result
 
     analyzed = executor.map(analyze, pool) if executor is not None else map(analyze, pool)
@@ -331,6 +524,11 @@ def signal_record(
     }
     for factor in FACTOR_NAMES:
         record[f"factor_{factor}"] = bool(conditions.get(factor, False))
+    record["universe_rank"] = candidate.get("universe_rank", np.nan)
+    for name, value in candidate.get("v4_components", {}).items():
+        record[f"rank_raw_{name}"] = float(value)
+    for name, value in candidate.get("rank_percentiles", {}).items():
+        record[f"rank_pct_{name}"] = float(value)
     return record
 
 

@@ -11,7 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 try:
-    from google import genai
+    from google import genai 
     from google.genai import types
 except Exception:
     genai = None
@@ -540,6 +540,12 @@ def tambah_indikator(tf: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
 
     breakout_window = cfg["breakout_window"]
     df["Prev_High"] = df["High"].rolling(breakout_window).max().shift(1)
+    # These levels are used by the screener on every completed candle.  Keeping
+    # them alongside the other causal indicators lets the backtest reuse a
+    # point-in-time history instead of recalculating the same rolling windows
+    # for every snapshot.
+    df["Support"] = df["Low"].rolling(cfg["sr_window"]).min()
+    df["Resistance"] = df["High"].rolling(cfg["sr_window"]).max()
 
     df["Body"] = df["Close"] - df["Open"]
     df["Upper_Wick"] = df["High"] - df[["Open", "Close"]].max(axis=1)
@@ -588,44 +594,6 @@ def deteksi_pola_candle(hari_ini: pd.Series, kemarin: pd.Series):
         # untuk breakout/pullback agar tidak terlalu mudah menambah score.
         return "Strong Bullish Close", False, strong_close
     return "Tidak ada pola bullish kuat", False, strong_close
-
-
-def hitung_market_breadth(data_massal: pd.DataFrame, pool: list[str]):
-    above50 = 0
-    above200 = 0
-    valid50 = 0
-    valid200 = 0
-    returns20 = []
-
-    for ticker in pool:
-        df = ekstrak_ticker_frame(data_massal, ticker)
-        if df.empty:
-            continue
-        df = buang_daily_candle_belum_selesai(df).dropna(subset=["Close"])
-        if len(df) < 60:
-            continue
-
-        close = df["Close"]
-        ema50 = close.ewm(span=50, adjust=False).mean()
-        valid50 += 1
-        if close.iloc[-1] > ema50.iloc[-1]:
-            above50 += 1
-
-        if len(df) >= 220:
-            ema200 = close.ewm(span=200, adjust=False).mean()
-            valid200 += 1
-            if close.iloc[-1] > ema200.iloc[-1]:
-                above200 += 1
-
-        if len(close) >= 21 and close.iloc[-21] > 0:
-            returns20.append(close.iloc[-1] / close.iloc[-21] - 1)
-
-    return {
-        "breadth50": above50 / valid50 if valid50 else np.nan,
-        "breadth200": above200 / valid200 if valid200 else np.nan,
-        "median_return20": float(np.median(returns20)) if returns20 else np.nan,
-        "jumlah_saham_breadth": valid50,
-    }
 
 
 def analisa_market_regime(ihsg_daily: pd.DataFrame, mode_tren: str, breadth: dict):
@@ -717,16 +685,26 @@ def hitung_daily_liquidity(df_saham: pd.DataFrame):
 
 def analisa_saham_confluence(
     ticker_code: str,
-    df_saham: pd.DataFrame,
+    df_saham: pd.DataFrame | None,
     ihsg_tf: pd.DataFrame,
     mode_tren: str,
     min_turnover: float,
     min_price: float,
+    *,
+    prepared_tf: pd.DataFrame | None = None,
+    liquidity: tuple[float, float] | None = None,
 ):
     try:
         mode_tren = normalize_timeframe(mode_tren)
         cfg = get_timeframe_config(mode_tren)
-        df = siapkan_data_untuk_timeframe(df_saham, mode_tren)
+        if prepared_tf is None:
+            if df_saham is None:
+                raise ValueError("Data saham diperlukan bila indikator belum disiapkan")
+            df = siapkan_data_untuk_timeframe(df_saham, mode_tren)
+        else:
+            # The runner supplies only candles whose label is at or before the
+            # snapshot date.  All columns were calculated causally.
+            df = prepared_tf
         if len(df) < 2:
             raise ValueError("Bar timeframe tidak cukup")
 
@@ -744,7 +722,12 @@ def analisa_saham_confluence(
             raise ValueError("Indikator utama mengandung NaN")
 
         # ---------- Likuiditas IDX: gunakan Rupiah turnover daily ----------
-        turnover20, turnover60 = hitung_daily_liquidity(df_saham)
+        if liquidity is None:
+            if df_saham is None:
+                raise ValueError("Data saham diperlukan bila likuiditas belum disiapkan")
+            turnover20, turnover60 = hitung_daily_liquidity(df_saham)
+        else:
+            turnover20, turnover60 = liquidity
         liquidity_ok = np.isfinite(turnover20) and turnover20 >= min_turnover
         price_ok = close >= min_price
 
@@ -840,8 +823,14 @@ def analisa_saham_confluence(
 
         # ---------- Support / Entry / Stop / Target ----------
         sr_window = cfg["sr_window"]
-        support = safe_float(df["Low"].rolling(sr_window).min().iloc[-1], close - atr)
-        resistance = safe_float(df["High"].rolling(sr_window).max().iloc[-1], close + atr)
+        support = safe_float(
+            df["Support"].iloc[-1] if "Support" in df else df["Low"].rolling(sr_window).min().iloc[-1],
+            close - atr,
+        )
+        resistance = safe_float(
+            df["Resistance"].iloc[-1] if "Resistance" in df else df["High"].rolling(sr_window).max().iloc[-1],
+            close + atr,
+        )
 
         tick = fraksi_harga_idx(close)
         if breakout_ok:
@@ -1254,7 +1243,7 @@ def simpan_csv(candidates: list[dict], path: str, mode_tren: str = ""):
             cfg = None
     rows = []
     for c in candidates:
-        rows.append({
+        row = {
             "ticker": c["ticker"],
             "date": c["date"],
             "timeframe": normalize_timeframe(mode_tren) if mode_tren else "",
@@ -1281,7 +1270,13 @@ def simpan_csv(candidates: list[dict], path: str, mode_tren: str = ""):
             "hard_pass": c["hard_pass"],
             "hard_fail_reasons": ";".join(c["hard_fail_reasons"]),
             "factors": c["kondisi_detail"],
-        })
+        }
+        row["universe_rank"] = c.get("universe_rank", "")
+        for name, value in c.get("v4_components", {}).items():
+            row[f"rank_raw_{name}"] = value
+        for name, value in c.get("rank_percentiles", {}).items():
+            row[f"rank_pct_{name}"] = value
+        rows.append(row)
     out = pd.DataFrame(rows)
     directory = os.path.dirname(path)
     if directory:

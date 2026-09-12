@@ -118,7 +118,31 @@ kurva ekuitas portfolio, 0 = tanpa batas), `--self-test`
 `by_factor/by_score_bucket/by_rank_bucket` di summary — tanpa
 mengubah eksekusi baseline.
 
-Pastikan `GEMINI_API_KEY` di-set di environment.
+`GEMINI_API_KEY` bersifat opsional. Tanpanya, screener memakai report
+deterministik dan seluruh perhitungan ranking tetap berjalan.
+
+### Backtest V2.0 — execution-valid baseline
+
+V2.0 memakai logika sinyal V1 yang frozen, tetapi tidak membeli `planned`
+candidate secara otomatis pada open berikutnya. Entry terjadi hanya bila harga
+menyentuh trigger dalam `entry_window`; biaya, slippage, lot IDX, pembatalan
+order, dan portfolio no-overlap dicatat terpisah. Jangan ubah parameter
+screener sebelum baseline ini selesai.
+
+```bash
+# Uji eksekusi deterministik, tanpa download data
+python3 tests/backtest_screener_v2.py --self-test
+
+# Smoke test trigger-aware (gunakan cache bila sudah tersedia)
+python3 tests/backtest_screener_v2.py --trend daily_swing \
+  --start 2022-01-01 --holdout-start 2024-01-01 --end 2026-08-31 \
+  --tickers BBCA,BBRI,TLKM --use-cache
+```
+
+Output default ada di `output/backtest_v2/v2_1_validation/`:
+`signals.csv`, `trades.csv`, `summary.csv`, `breakdown.csv`,
+portfolio files, metadata, dan analysis report. Kontrak risetnya ada di
+`BACKTEST_PLAN_V2.md`.
 
 ---
 
@@ -126,15 +150,19 @@ Pastikan `GEMINI_API_KEY` di-set di environment.
 
 ```
 scripts/
-  └── financial_screener.py      ← Main screener (frozen V1, dipakai ulang backtest)
+  ├── financial_screener.py      ← Main screener/baseline V1
+  ├── financial_screener_v3.py   ← Varian riset V3-A; bukan screener live
+  └── financial_screener_v4.py   ← Tiga model ranking timeframe; tahap riset
 tests/
-  └── backtest_screener_v1.py    ← Backtest engine V1 (walk-forward point-in-time)
+  ├── backtest_screener_v1.py    ← Backtest engine V1
+  ├── backtest_screener_v2.py    ← Trigger/cost/portfolio/walk-forward engine
+  └── test_backtest_screener_v2.py
 resource/
   └── daftar-saham.xlsx          ← IDX universe (963 baris per cek lokal)
 output/
   ├── idx-screening.csv          ← Hasil screening mode timeframe
   ├── idx_single_<TICKER>.csv    ← Hasil analisis saham tunggal
-  └── backtest/                  ← Hasil backtest V1 (signals/trades/summary/report + cache/)
+  └── backtest*/                 ← Artefak hasil; diabaikan Git dan dapat dibuat ulang
 ```
 
 ---
@@ -159,6 +187,9 @@ Install: `pip install -r requirements.txt`
 | :--- | :--- |
 | **README.md** | Overview, strategy, usage (Anda di sini) |
 | **BACKTEST_PLAN_V1.md** | Kontrak baseline V1: metodologi, eksekusi, output, batasan |
+| **BACKTEST_PLAN_V2.md** | Kontrak validasi eksekusi, biaya, portfolio, dan data |
+| **BACKTEST_PLAN_V3.md** | Kontrak eksperimen ablation V3 |
+| **BACKTEST_PLAN_V4.md** | Formula dan kontrak evaluasi screener V4 |
 
 ---
 
