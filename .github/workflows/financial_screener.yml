@@ -42,6 +42,7 @@ jobs:
 
       - name: Verify final screener
         run: |
+          python3 -m py_compile scripts/*.py tests/*.py
           pytest -q
           python3 tests/backtest_engine.py --self-test
 
@@ -69,6 +70,8 @@ jobs:
       - name: Run final screener
         env:
           SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
         run: |
           python3 scripts/financial_screener.py \
             --timeframe "$SELECTED_TIMEFRAME" \

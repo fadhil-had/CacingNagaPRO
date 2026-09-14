@@ -7,6 +7,7 @@ import math
 import time
 import random
 import argparse
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,9 +15,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-# Final reports are deterministic; AI-generated commentary is intentionally off.
-genai = None
-types = None
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:  # Deterministic reporting remains available without AI.
+    genai = None
+    types = None
 
 
 IDX_BENCHMARK = "^JKSE"
@@ -1232,8 +1236,8 @@ def deterministic_report(top_picks, mode_tren, market_regime):
         )
     lines.append("")
     if mode_tren == "daily_swing":
-        lines.append("*Eksekusi daily hanya bila status Ready to Enter (trigger aktif). Output berisi maksimal tiga rekomendasi, dengan SL aktual 2–5%, TP 3–10%, dan time-stop 10 sesi.*")
-    lines.append("*Confluence daily ini bersifat eksperimental; indikator tunggal belum lolos validasi historis internal. Ini bukan jaminan hasil.*")
+        lines.append("*Modul ini adalah core internal. Gunakan financial_screener.py untuk kontrak watchlist daily D+10 final.*")
+    lines.append("*Hasil screener dan backtest tidak menjamin performa berikutnya.*")
     return "\n".join(lines)
 
 
@@ -1259,6 +1263,164 @@ def ambil_berita(ticker: str, limit: int = 2):
         ) or (item.get("publisher") if isinstance(item, dict) else None) or "Unknown"
         result.append(f"- {title} ({publisher})")
     return result
+
+
+def add_grounding_citations(response) -> str:
+    """Attach Gemini Google Search citations and a deduplicated source list."""
+    text = (getattr(response, "text", "") or "").strip()
+    candidates = getattr(response, "candidates", None) or []
+    if not text or not candidates:
+        return text
+    metadata = getattr(candidates[0], "grounding_metadata", None)
+    if metadata is None:
+        return text
+    supports = list(getattr(metadata, "grounding_supports", None) or [])
+    chunks = list(getattr(metadata, "grounding_chunks", None) or [])
+
+    for support in sorted(
+        supports,
+        key=lambda item: (
+            getattr(getattr(item, "segment", None), "end_index", 0) or 0
+        ),
+        reverse=True,
+    ):
+        end_index = getattr(getattr(support, "segment", None), "end_index", None)
+        indices = getattr(support, "grounding_chunk_indices", None) or []
+        links = []
+        for index in indices:
+            if index >= len(chunks):
+                continue
+            web = getattr(chunks[index], "web", None)
+            uri = getattr(web, "uri", "") if web else ""
+            if uri:
+                links.append(f"[{index + 1}]({uri})")
+        if end_index is not None and links:
+            text = f"{text[:end_index]} {', '.join(dict.fromkeys(links))}{text[end_index:]}"
+
+    sources = []
+    seen = set()
+    for chunk in chunks:
+        web = getattr(chunk, "web", None)
+        uri = getattr(web, "uri", "") if web else ""
+        title = getattr(web, "title", "") if web else ""
+        if not uri or uri in seen:
+            continue
+        seen.add(uri)
+        safe_title = str(title or uri).replace("]", "\\]")
+        sources.append(f"- [{safe_title}]({uri})")
+    if sources:
+        text += "\n\n### Sumber berita\n" + "\n".join(sources)
+    search_entry = getattr(metadata, "search_entry_point", None)
+    rendered_search = (
+        getattr(search_entry, "rendered_content", "") if search_entry else ""
+    )
+    if rendered_search:
+        text += "\n\n### Google Search\n" + rendered_search
+    return text
+
+
+def generate_gemini_analysis(top_picks, mode_tren, market_regime) -> str:
+    """Explain locked screener output without changing any recommendation data."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None or types is None:
+        reason = "GEMINI_API_KEY tidak ada" if not api_key else "google-genai tidak tersedia"
+        print(f"ℹ️ {reason}; laporan tetap deterministik.")
+        return ""
+
+    locked_candidates = []
+    for candidate in top_picks:
+        item = {
+            "ticker": candidate["ticker"].replace(".JK", ""),
+            "status": candidate["status"],
+            "quality_score": candidate.get("quality_score"),
+            "close": candidate.get("harga_terakhir"),
+            "setup": candidate.get("setup_name"),
+            "holding_horizon": candidate.get("holding_horizon"),
+            "rank_percentiles": candidate.get("rank_percentiles", {}),
+            "technical_conditions": candidate.get("kondisi_detail", ""),
+        }
+        if mode_tren == "daily_swing":
+            item.update({
+                "take_profit_options_pct": [3, 5, 10],
+                "stop_loss_options_pct": [2, 5],
+                "execution_note": (
+                    "User menentukan entry dan kombinasi TP/SL; pilihan ini "
+                    "bukan aturan eksekusi tervalidasi."
+                ),
+            })
+        else:
+            item.update({
+                "entry": candidate.get("entry_level"),
+                "stop": candidate.get("stop_level"),
+                "target": candidate.get("target_price"),
+                "risk_reward": candidate.get("risk_reward"),
+            })
+        locked_candidates.append(item)
+
+    payload = {
+        "analysis_date_wib": datetime.now(IDX_TZ).date().isoformat(),
+        "timeframe": mode_tren,
+        "market_regime_is_diagnostic_only": mode_tren == "daily_swing",
+        "market_regime": {
+            key: market_regime.get(key)
+            for key in (
+                "regime", "score", "score_max", "close", "breadth50",
+                "breadth200", "median_return20", "detail",
+            )
+        },
+        "locked_candidates": locked_candidates,
+    }
+    system_instruction = (
+        "Anda adalah lapisan penjelasan untuk screener teknikal saham BEI. "
+        "Data JSON adalah hasil final yang terkunci. Jangan menambah, menghapus, "
+        "mengurutkan ulang, atau mengganti ticker, status, score, harga, horizon, "
+        "entry, TP, maupun SL. Jangan mengeluarkan rekomendasi saham baru. "
+        "Gunakan Google Search untuk mencari berita material terbaru bagi setiap "
+        "ticker, utamakan 30 hari terakhir dan sumber primer/resmi seperti BEI, "
+        "keterbukaan informasi emiten, regulator, atau situs perusahaan. Berita "
+        "media boleh menjadi konteks sekunder. Setiap klaim berita harus memiliki "
+        "citation; bila tidak ada berita kredibel, katakan demikian dan jangan "
+        "mengarang katalis. Untuk daily, IHSG hanya diagnostik dan TP/SL adalah "
+        "opsi user, bukan prediksi sistem. "
+        "Tulis dalam Bahasa Indonesia dengan format: '## Analisis AI', ringkasan "
+        "market 2-3 kalimat, lalu satu bullet per ticker berisi alasan teknikal, "
+        "risiko utama, dan hal yang perlu dipantau. Akhiri disclaimer singkat."
+    )
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    models = [primary_model]
+    if primary_model != "gemini-2.5-flash":
+        models.append("gemini-2.5-flash")
+    client = genai.Client(api_key=api_key)
+    retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")
+
+    for model in models:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=json.dumps(payload, ensure_ascii=False, default=str),
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.2,
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                    ),
+                )
+                text = add_grounding_citations(response)
+                if text:
+                    print(f"🤖 Analisis AI dibuat dengan {model}.")
+                    return text
+                break
+            except Exception as exc:
+                retryable = any(code in str(exc) for code in retryable_codes)
+                if retryable and attempt == 0:
+                    delay = 1.0 + random.uniform(0.0, 0.5)
+                    print(f"⚠️ {model} sementara gagal; retry {delay:.1f} detik.")
+                    time.sleep(delay)
+                    continue
+                print(f"⚠️ Analisis AI dengan {model} gagal: {exc}")
+                break
+    print("ℹ️ Semua model Gemini gagal; laporan tetap deterministik.")
+    return ""
 
 
 def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report):
@@ -1313,12 +1475,12 @@ def generate_gemini_report(top_picks, mode_tren, market_regime, fallback_report)
     client = genai.Client(api_key=api_key)
 
     # GEMINI_MODEL tetap bisa dipakai untuk override dari GitHub Secret/Env.
-    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
     # Fallback model hanya dipakai bila primary gagal setelah retry.
     models = [primary_model]
-    if primary_model != "gemini-3.1-flash-lite":
-        models.append("gemini-3.1-flash-lite")
+    if primary_model != "gemini-2.5-flash":
+        models.append("gemini-2.5-flash")
 
     max_attempts_per_model = 3
     retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")
@@ -1685,10 +1847,10 @@ def generate_gemini_report_single(ticker: str, hasil: dict, fallback_report: str
     )
 
     client = genai.Client(api_key=api_key)
-    primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
     models = [primary_model]
-    if primary_model != "gemini-3.1-flash-lite":
-        models.append("gemini-3.1-flash-lite")
+    if primary_model != "gemini-2.5-flash":
+        models.append("gemini-2.5-flash")
 
     max_attempts_per_model = 3
     retryable_codes = ("429", "500", "502", "503", "504", "UNAVAILABLE")

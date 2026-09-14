@@ -53,6 +53,28 @@ Menu **Run workflow** juga menyediakan pilihan `daily_swing`,
 self-test backtest sebelum screening, lalu mengunggah CSV sebagai artifact
 selama 90 hari.
 
+## Laporan AI
+
+Laporan numerik deterministik selalu dibuat lebih dahulu dan menjadi sumber
+kebenaran. Bila `GEMINI_API_KEY` tersedia, Gemini memakai Google Search untuk
+mencari berita terbaru setiap ticker, lalu menambahkan penjelasan market, alasan
+teknikal, katalis, risiko, dan hal yang perlu dipantau. Laporan menyertakan link
+sumber pencarian. AI tidak boleh mengubah ticker, ranking, status, score,
+horizon, atau level dari program.
+
+Untuk GitHub Actions, tambahkan repository secret `GEMINI_API_KEY`. Repository
+variable `GEMINI_MODEL` bersifat opsional; default-nya
+`gemini-2.5-flash-lite`. Jika key, dependency, atau model bermasalah, proses
+tetap berhasil menggunakan laporan deterministik.
+
+Google Search grounding dapat menambah biaya pemakaian Gemini API. Pencarian
+memprioritaskan sumber primer seperti BEI, keterbukaan informasi emiten,
+regulator, dan situs perusahaan; jika sumber kredibel tidak ditemukan, AI wajib
+menyatakannya tanpa mengarang katalis.
+
+Artifact berisi CSV lengkap dan `<timeframe>_report.md` yang memuat laporan
+deterministik beserta analisis AI jika tersedia.
+
 CSV lengkap berada di `<output-dir>/<timeframe>.csv`. Baris rekomendasi daily
 ditandai `selected_top3=true`; baris lain dipertahankan untuk audit alasan
 lolos/gagal filter.

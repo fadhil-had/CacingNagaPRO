@@ -533,7 +533,16 @@ def main(argv: list[str] | None = None) -> int:
         if not shown:
             print(f"{mode}: tidak ada kandidat valid")
             continue
-        print("\n" + deterministic_report(shown, mode, regime))
+        deterministic = deterministic_report(shown, mode, regime)
+        ai_analysis = generate_gemini_analysis(shown, mode, regime)
+        report = (
+            f"{deterministic}\n\n{ai_analysis}"
+            if ai_analysis else deterministic
+        )
+        (output_dir / f"{mode}_report.md").write_text(
+            report + "\n", encoding="utf-8",
+        )
+        print("\n" + report)
     return 0
 
 

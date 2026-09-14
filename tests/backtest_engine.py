@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Execution-valid backtest engine for the final IDX screeners.
+"""Cost-aware backtest engine for the final IDX screeners.
 
-This engine does not change indicator rules. It models execution explicitly:
-planned setups trade only after their trigger, all fills include costs, and
-cancelled orders remain visible in the audit output.
+This engine does not change indicator rules. Weekly/monthly planned setups only
+trade after their trigger. Daily selection-only watchlists use next-session
+open through D+10 close. All fills include costs and invalid outcomes remain
+visible in the audit output.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 
-ENGINE_VERSION = "2.8.0"
+ENGINE_VERSION = "2.9.0"
 V1_PATH = Path(__file__).with_name("backtest_data.py")
 HOLD_SELECTION_MIN_TRADES = {
     "daily_swing": 100,
@@ -176,7 +177,75 @@ def find_entry(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, cfg: Execu
     return {"status": "NO_TRIGGER"}
 
 
+def simulate_watchlist_signal(
+    signal: dict,
+    stock: pd.DataFrame,
+    ihsg: pd.DataFrame,
+    bars: int,
+    days: int,
+    cfg: ExecutionConfig,
+) -> dict:
+    """Evaluate a selection-only watchlist from next open to the D+N close.
+
+    Daily final intentionally has no validated trigger, stop, or target. This
+    path therefore measures stock-selection quality without inventing those
+    execution rules, while still applying the configured costs and slippage.
+    """
+    screen_date = pd.Timestamp(signal["screen_date"])
+    sessions = eligible_sessions(ihsg, screen_date, days)
+    if len(sessions) < days:
+        return empty_outcome(signal, bars, days, "INCOMPLETE_HOLD_DATA")
+
+    entry_date, exit_date = pd.Timestamp(sessions[0]), pd.Timestamp(sessions[-1])
+    if entry_date not in stock.index or float(stock.loc[entry_date].get("Volume", 0)) <= 0:
+        return empty_outcome(signal, bars, days, "NO_NEXT_SESSION_ENTRY")
+    if exit_date not in stock.index or float(stock.loc[exit_date].get("Volume", 0)) <= 0:
+        return empty_outcome(signal, bars, days, "UNEXECUTABLE_TIME_EXIT")
+
+    entry_base = float(stock.loc[entry_date, "Open"])
+    exit_base = float(stock.loc[exit_date, "Close"])
+    if not np.isfinite(entry_base) or not np.isfinite(exit_base) or entry_base <= 0:
+        return empty_outcome(signal, bars, days, "INVALID_PRICE_LEVEL")
+
+    shares = cfg.lot_size
+    entry_price, exit_price = buy_fill(entry_base, cfg), sell_fill(exit_base, cfg)
+    entry_fee = side_cost(entry_price, shares, cfg)
+    exit_fee = side_cost(exit_price, shares, cfg)
+    gross_return = (exit_price / entry_price - 1) * 100
+    net_cost = entry_price * shares + entry_fee
+    net_proceeds = exit_price * shares - exit_fee
+    net_return = (net_proceeds / net_cost - 1) * 100
+    benchmark = V1.ihsg_return(ihsg, entry_date, exit_date)
+    return {
+        **signal,
+        "max_hold_bars": bars,
+        "max_hold_days": days,
+        "order_status": "TRIGGERED",
+        "trade_status": "COMPLETED",
+        "entry_date": entry_date,
+        "entry_price": entry_price,
+        "entry_base_price": entry_base,
+        "exit_date": exit_date,
+        "exit_price": exit_price,
+        "exit_reason": "MAX_HOLD_SELECTION_ONLY",
+        "holding_sessions": days,
+        "gross_return_pct": gross_return,
+        "net_return_pct": net_return,
+        "entry_fee": entry_fee,
+        "exit_fee": exit_fee,
+        "total_cost": entry_fee + exit_fee,
+        "ihsg_return_pct": benchmark,
+        "net_excess_vs_ihsg_pct": (
+            net_return - benchmark if np.isfinite(benchmark) else np.nan
+        ),
+        "r_multiple": np.nan,
+        "watchlist_evaluation": True,
+    }
+
+
 def simulate_signal(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, bars: int, days: int, cfg: ExecutionConfig) -> dict:
+    if signal.get("entry_type") == "not_validated":
+        return simulate_watchlist_signal(signal, stock, ihsg, bars, days, cfg)
     entry = find_entry(signal, stock, ihsg, cfg)
     if entry["status"] != "TRIGGERED":
         return empty_outcome(signal, bars, days, entry["status"])
@@ -867,6 +936,38 @@ def run_self_test() -> None:
     result = simulate_signal(base, triggered, ihsg, 3, 3, cfg)
     assert result["trade_status"] == "COMPLETED" and result["entry_date"] == dates[1]
     assert result["exit_reason"] == "TARGET" and result["net_return_pct"] < result["gross_return_pct"]
+    watchlist = {
+        **base,
+        "status": "Watchlist D+10",
+        "entry_type": "not_validated",
+        "stop_price": np.nan,
+        "target_price": np.nan,
+    }
+    watch_result = simulate_signal(watchlist, triggered, ihsg, 3, 3, cfg)
+    assert watch_result["trade_status"] == "COMPLETED"
+    assert watch_result["entry_date"] == dates[0] and watch_result["exit_date"] == dates[2]
+    assert watch_result["exit_reason"] == "MAX_HOLD_SELECTION_ONLY"
+    assert watch_result["watchlist_evaluation"]
+    class DailyContract:
+        STATUS_DAILY_WATCHLIST = "Watchlist D+10"
+
+    ranked_watchlist = V1.rank_candidates(
+        DailyContract,
+        [
+            {
+                "ticker": "LOW.JK", "timeframe": "daily_swing",
+                "status": "Watchlist D+10", "quality_score": 81.0,
+                "universe_rank": 2,
+            },
+            {
+                "ticker": "HIGH.JK", "timeframe": "daily_swing",
+                "status": "Watchlist D+10", "quality_score": 90.0,
+                "universe_rank": 1,
+            },
+        ],
+        "daily_swing",
+    )
+    assert [item["ticker"] for item in ranked_watchlist] == ["HIGH.JK", "LOW.JK"]
     no_trigger = triggered.copy(); no_trigger.loc[:, "High"] = 104
     assert simulate_signal(base, no_trigger, ihsg, 3, 3, cfg)["order_status"] == "NO_TRIGGER"
     stopped = triggered.copy(); stopped.loc[dates[1], ["High", "Low"]] = [104, 94]
@@ -890,7 +991,7 @@ def run_self_test() -> None:
     assert len(same_closed) == 1 and same_closed.iloc[0].exit_reason == "STOP_SAME_BAR"
     assert not bool(same_closed.iloc[0].get("forced_end", False))
     assert same_curve.iloc[-1].active_positions == 0
-    print("Backtest self-test passed: trigger, cancellation, conservative exit, costs, capacity audit, same-session exit, and force-close.")
+    print("Backtest self-test passed: watchlist D+N, trigger, cancellation, conservative exit, costs, capacity audit, same-session exit, and force-close.")
 
 
 def canonical_ticker(value: object) -> str:
@@ -1178,7 +1279,7 @@ def write_point_in_time_audit(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Trigger-aware IDX screener backtest")
+    parser = argparse.ArgumentParser(description="Cost-aware final IDX screener backtest")
     parser.add_argument("--screener-file", default="scripts/financial_screener.py")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
     parser.add_argument("--tickers", default="")
@@ -1329,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
                 }
         if not signals:
             if not args.allow_empty:
-                raise RuntimeError("No eligible V1 signals were produced")
+                raise RuntimeError("No eligible final recommendations were produced")
             pd.DataFrame().to_csv(out / "signals.csv", index=False)
             pd.DataFrame(errors).to_csv(out / "screen_errors.csv", index=False)
             metadata = {
@@ -1345,7 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
             (out / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
             (out / "EMPTY_RESULT.md").write_text(
                 "# No published recommendations\n\n"
-                "No `Ready to Enter` recommendation was produced in this interval. "
+                "No published recommendation was produced in this interval. "
                 "This is a valid screening result, not a zero-return trade simulation.\n",
                 encoding="utf-8",
             )
@@ -1354,7 +1455,7 @@ def main(argv: list[str] | None = None) -> int:
         signal_frame = pd.DataFrame(signals); signal_frame["screen_date"] = pd.to_datetime(signal_frame.screen_date); signal_frame["sample_split"] = np.where(signal_frame.screen_date < holdout, "SELECTION", "CONFIRMATION")
         outcomes = []
         signal_records = signal_frame.to_dict("records")
-        print(f"Simulating trigger-aware outcomes for {len(signal_records):,} signals...", flush=True)
+        print(f"Simulating cost-aware outcomes for {len(signal_records):,} signals...", flush=True)
         for number, signal in enumerate(signal_records, start=1):
             cutoff = holdout - pd.Timedelta(nanoseconds=1) if signal["sample_split"] == "SELECTION" else end
             stock, benchmark = stocks[signal["ticker"]].loc[:cutoff], ihsg.loc[:cutoff]
@@ -1411,7 +1512,7 @@ def main(argv: list[str] | None = None) -> int:
         walk_forward.to_csv(out / "walk_forward_summary.csv", index=False)
         audits.append(walk_forward_audit)
     pd.concat(audits, ignore_index=True).to_csv(out / "hold_selection_audit.csv", index=False)
-    metadata = {"backtest_engine_version": ENGINE_VERSION, "execution": "trigger_aware_cost_aware", "screener_file": args.screener_file, "screener_sha256": hashlib.sha256(Path(args.screener_file).read_bytes()).hexdigest(), "screener_variant_id": getattr(screener, "VARIANT_ID", "FINAL_SCREENER"), "start": str(start.date()), "holdout_start": str(holdout.date()), "end": str(end.date()), "fee_pct": args.fee_pct, "slippage_pct": args.slippage_pct, "same_bar_policy": args.same_bar_policy, "initial_capital": args.initial_capital, "max_positions": args.max_positions, "risk_per_trade_pct": args.risk_per_trade_pct, "max_position_pct": args.max_position_pct, "primary_evaluation": "occasional_top_pick_recommendation_runs", "portfolio_candidate_policy": "ready_to_enter_top_pick_triggered", "hold_selection_policy": "secondary_constrained_portfolio_diagnostic", "hold_selection_minimum_trades": HOLD_SELECTION_MIN_TRADES, "hold_selection_minimum_pf": HOLD_SELECTION_MIN_PF, "hold_selection_maximum_drawdown_pct": HOLD_SELECTION_MAX_DRAWDOWN_PCT, "force_close_at_period_end": True, "walk_forward_requested": args.walk_forward, "universe_size_with_data": len(pool), "universe_membership_manifest": str(manifest_path) if manifest_path else None, "universe_membership_applied_per_snapshot": membership_manifest is not None, "market_data_cache": str(cache_path) if (args.use_cache or args.market_data_cache_file) else None, "snapshot_counts": snapshot_counts, "screen_errors": len(errors), "survivorship_bias": True, "universe_status": "IPO_PROXY_OR_HISTORICAL_MANIFEST_APPLIED_REVIEW_REQUIRED" if membership_manifest is not None else "POINT_IN_TIME_UNIVERSE_REQUIRED"}
+    metadata = {"backtest_engine_version": ENGINE_VERSION, "execution": "daily_fixed_horizon_or_trigger_aware_cost_aware", "screener_file": args.screener_file, "screener_sha256": hashlib.sha256(Path(args.screener_file).read_bytes()).hexdigest(), "screener_variant_id": getattr(screener, "VARIANT_ID", "FINAL_SCREENER"), "start": str(start.date()), "holdout_start": str(holdout.date()), "end": str(end.date()), "fee_pct": args.fee_pct, "slippage_pct": args.slippage_pct, "same_bar_policy": args.same_bar_policy, "initial_capital": args.initial_capital, "max_positions": args.max_positions, "risk_per_trade_pct": args.risk_per_trade_pct, "max_position_pct": args.max_position_pct, "primary_evaluation": "occasional_top_pick_recommendation_runs", "portfolio_candidate_policy": "ready_to_enter_top_pick_triggered", "hold_selection_policy": "secondary_constrained_portfolio_diagnostic", "hold_selection_minimum_trades": HOLD_SELECTION_MIN_TRADES, "hold_selection_minimum_pf": HOLD_SELECTION_MIN_PF, "hold_selection_maximum_drawdown_pct": HOLD_SELECTION_MAX_DRAWDOWN_PCT, "force_close_at_period_end": True, "walk_forward_requested": args.walk_forward, "universe_size_with_data": len(pool), "universe_membership_manifest": str(manifest_path) if manifest_path else None, "universe_membership_applied_per_snapshot": membership_manifest is not None, "market_data_cache": str(cache_path) if (args.use_cache or args.market_data_cache_file) else None, "snapshot_counts": snapshot_counts, "screen_errors": len(errors), "survivorship_bias": True, "universe_status": "IPO_PROXY_OR_HISTORICAL_MANIFEST_APPLIED_REVIEW_REQUIRED" if membership_manifest is not None else "POINT_IN_TIME_UNIVERSE_REQUIRED"}
     (out / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     write_analysis(out / "backtest_analysis.md", policy_summary, metadata, selection_audit)
     write_recommendation_analysis(

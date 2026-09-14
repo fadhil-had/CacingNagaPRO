@@ -145,6 +145,92 @@ def test_daily_candidate_uses_validated_features_and_has_no_execution_levels():
     assert np.isnan(result["target_price"])
 
 
+def test_ai_reporting_falls_back_cleanly_without_api_key(monkeypatch):
+    screener = load(ROOT / "scripts" / "financial_screener.py", "ai_fallback_test")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert screener.generate_gemini_analysis(
+        [{"ticker": "TEST.JK"}],
+        "daily_swing",
+        {},
+    ) == ""
+
+
+def test_ai_reporting_is_commentary_only_and_uses_locked_payload(monkeypatch):
+    screener = load(ROOT / "scripts" / "financial_screener.py", "ai_report_test")
+    function_globals = screener.generate_gemini_analysis.__globals__
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"text": "## Analisis AI\n- TEST: pantau risiko."})()
+
+    class FakeGenAI:
+        @staticmethod
+        def Client(api_key):
+            assert api_key == "test-key"
+            return type("Client", (), {"models": FakeModels()})()
+
+    class FakeTypes:
+        class GoogleSearch:
+            pass
+
+        class Tool:
+            def __init__(self, **kwargs):
+                self.values = kwargs
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs):
+                self.values = kwargs
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.setitem(function_globals, "genai", FakeGenAI)
+    monkeypatch.setitem(function_globals, "types", FakeTypes)
+    monkeypatch.setitem(function_globals, "ambil_berita", lambda *_: [])
+    result = screener.generate_gemini_analysis(
+        [{
+            "ticker": "TEST.JK",
+            "status": screener.STATUS_DAILY_WATCHLIST,
+            "quality_score": 90,
+            "harga_terakhir": 1_000,
+        }],
+        "daily_swing",
+        {"regime": "BULLISH"},
+    )
+
+    assert result.startswith("## Analisis AI")
+    assert captured["model"] == "gemini-2.5-flash-lite"
+    assert '"ticker": "TEST"' in captured["contents"]
+    assert '"take_profit_options_pct": [3, 5, 10]' in captured["contents"]
+    assert captured["config"].values["tools"]
+
+
+def test_grounded_news_sources_are_rendered_as_clickable_links():
+    screener = load(ROOT / "scripts" / "financial_screener.py", "ai_sources_test")
+    web = type("Web", (), {"uri": "https://example.com/news", "title": "Source"})()
+    chunk = type("Chunk", (), {"web": web})()
+    segment = type("Segment", (), {"end_index": 12})()
+    support = type(
+        "Support", (),
+        {"segment": segment, "grounding_chunk_indices": [0]},
+    )()
+    metadata = type(
+        "Metadata", (),
+        {"grounding_supports": [support], "grounding_chunks": [chunk]},
+    )()
+    candidate = type("Candidate", (), {"grounding_metadata": metadata})()
+    response = type(
+        "Response", (),
+        {"text": "Berita baru.", "candidates": [candidate]},
+    )()
+
+    result = screener.add_grounding_citations(response)
+    assert "[1](https://example.com/news)" in result
+    assert "### Sumber berita" in result
+    assert "[Source](https://example.com/news)" in result
+
+
 def test_weekly_only_publishes_ready_candidates():
     screener = load(ROOT / "scripts" / "financial_screener.py", "weekly_policy_test")
     candidates = [

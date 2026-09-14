@@ -33,6 +33,10 @@ Aturan final:
   eksekusinya sudah tervalidasi.
 - IHSG pada daily bersifat diagnostik dan tidak memblokir kandidat.
 - Eksperimen daily 2–5 sesi ditolak dan tidak masuk kode final.
+- AI hanya menjelaskan output yang sudah dikunci dan tidak ikut menghitung atau
+  mengubah rekomendasi. Tanpa `GEMINI_API_KEY`, laporan deterministik tetap ada.
+- Pencarian berita AI memakai Google Search grounding dan menyertakan sumber;
+  klaim berita tanpa sumber kredibel tidak boleh dibuat.
 - Hasil lama di `output/` dipertahankan sebagai audit lokal.
 
 Detail formula, bukti backtest, keterbatasan data, dan command verifikasi ada di
