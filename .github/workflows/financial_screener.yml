@@ -1,68 +1,57 @@
-name: Automated IDX Stock Screener
+name: IDX Stock Screener
+
+permissions:
+  contents: read
 
 on:
   schedule:
-    # Berjalan otomatis setiap hari kerja jam 09:00 UTC (16:00 WIB) setelah bursa tutup
-    - cron: '0 9 * * 1-5'
+    # Friday 17:00 WIB, after the weekly candle has closed.
+    - cron: '0 10 * * 5'
   workflow_dispatch:
-    # Mengaktifkan tombol untuk menjalankan workflow secara manual dari GitHub UI
     inputs:
-      trend_mode:
-        description: 'Pilih rentang waktu tren trading'
+      timeframe:
+        description: 'Final screener to run'
         required: true
-        default: 'daily_swing'
+        default: 'weekly_position'
         type: choice
         options:
-          - daily_swing
           - weekly_position
           - monthly_long_term
-          - all
-      ticker:
-        description: 'Kode saham (opsional, hanya bersama trend_mode=all) untuk analisis 3 timeframe'
-        required: false
-        default: ''
-        type: string
 
 jobs:
   screen-stocks:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12' # Diperbaiki dari 'python-node-version' ke 'python-version'
-        cache: 'pip'
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        python -m pip check
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
 
-    - name: Run Stock Screener (Scheduled)
-      if: github.event_name == 'schedule'
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
-      run: |
-        # Menggunakan mode daily untuk run harian yang lebih presisi
-        python scripts/financial_screener.py --trend daily_swing
+      - name: Run final screener
+        env:
+          SELECTED_TIMEFRAME: ${{ github.event.inputs.timeframe || 'weekly_position' }}
+        run: |
+          python3 scripts/financial_screener.py \
+            --timeframe "$SELECTED_TIMEFRAME" \
+            --period 10y \
+            --workers 8 \
+            --top 3 \
+            --output-dir "output/screener/$SELECTED_TIMEFRAME"
 
-    - name: Run Stock Screener (Manual Trigger)
-      if: github.event_name == 'workflow_dispatch'
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
-      run: |
-        # Mode 1: trend_mode daily_swing/weekly_position/monthly_long_term (tanpa ticker) -> rekomendasi saham + analisa
-        # Mode 2: trend_mode=all + ticker        -> analisis 1 saham di 3 timeframe
-        # Error  : trend_mode=all tanpa ticker   -> "Jangan semua timeframe, berat"
-        if [ -n "${{ github.event.inputs.ticker }}" ]; then
-          python scripts/financial_screener.py --trend all --ticker "${{ github.event.inputs.ticker }}"
-        else
-          python scripts/financial_screener.py --trend "${{ github.event.inputs.trend_mode }}"
-        fi
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: screener-${{ github.event.inputs.timeframe || 'weekly_position' }}-${{ github.run_id }}
+          path: output/screener/
+          if-no-files-found: error
+          retention-days: 90

@@ -1,14 +1,13 @@
-"""V4 research screener with independent models for three holding horizons.
+"""Shared cross-sectional ranking model for weekly and monthly screeners.
 
-V4 keeps the proven data-loading and execution contract from the baseline, but
-separates three concepts that V1 mixed into one confluence score:
+It keeps the proven data-loading and execution contract from the baseline, but
+separates three concepts that the original confluence score mixed together:
 
 * eligibility: liquidity, price, trend, and volatility requirements;
 * ranking: cross-sectional percentile score with timeframe-specific factors;
 * trigger: whether an eligible ranked candidate is actionable now.
 
-The module exports the same public hooks used by ``backtest_screener_v2.py``.
-It is a research candidate and does not replace ``financial_screener.py``.
+The module exports the public hooks used by the final backtest engine.
 """
 from __future__ import annotations
 
@@ -22,8 +21,8 @@ import numpy as np
 import pandas as pd
 
 
-_BASE_PATH = Path(__file__).with_name("financial_screener.py")
-_SPEC = importlib.util.spec_from_file_location("financial_screener_v4_base", _BASE_PATH)
+_BASE_PATH = Path(__file__).with_name("screener_core.py")
+_SPEC = importlib.util.spec_from_file_location("screener_core_base", _BASE_PATH)
 if _SPEC is None or _SPEC.loader is None:
     raise ImportError(f"Unable to load baseline screener: {_BASE_PATH}")
 _BASE = importlib.util.module_from_spec(_SPEC)
@@ -35,7 +34,7 @@ for _name in dir(_BASE):
         globals()[_name] = getattr(_BASE, _name)
 
 
-VARIANT_ID = "V4_TIMEFRAME_SPECIFIC_PERCENTILE_RANK"
+VARIANT_ID = "TIMEFRAME_PERCENTILE_RANK"
 GLOBAL_RANKING = True
 STATUS_SKIP_SETUP = "Skip - Setup"
 
@@ -102,7 +101,7 @@ def _risk_adjusted_return(frame: pd.DataFrame, lookback: int) -> float:
 
 
 def tambah_indikator(tf: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
-    """Add only the V4 features that are reusable across historical snapshots."""
+    """Add causal features reusable across historical snapshots."""
     mode = normalize_timeframe(mode_tren)
     df = _BASE.tambah_indikator(tf, mode)
     close = df["Close"]
@@ -128,7 +127,7 @@ def tambah_indikator(tf: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
 
 
 def siapkan_data_untuk_timeframe(df_saham: pd.DataFrame, mode_tren: str) -> pd.DataFrame:
-    """Prepare causal V4 features and preserve the daily 200-day trend."""
+    """Prepare causal features and preserve the daily 200-day trend."""
     mode = normalize_timeframe(mode_tren)
     daily = _BASE.buang_daily_candle_belum_selesai(df_saham)
     tf = _BASE.resample_timeframe(daily, mode)
@@ -150,7 +149,7 @@ def analisa_market_regime(
     mode_tren: str,
     breadth: dict,
 ) -> dict:
-    """Keep the baseline regime diagnostics and add the explicit V4 gate."""
+    """Keep baseline regime diagnostics and add the explicit trend gate."""
     mode = normalize_timeframe(mode_tren)
     regime = _BASE.analisa_market_regime(ihsg_daily, mode, breadth)
     frame = siapkan_data_untuk_timeframe(ihsg_daily, mode)
@@ -258,7 +257,7 @@ def _timeframe_metrics(
 
 
 # Small research variants can replace this hook without copying the complete
-# V4 data-loading, reporting, and candidate-construction implementation.
+# Shared data-loading, reporting, and candidate-construction implementation.
 TIMEFRAME_METRICS = _timeframe_metrics
 
 
@@ -273,7 +272,7 @@ def analisa_saham_confluence(
     prepared_tf: pd.DataFrame | None = None,
     liquidity: tuple[float, float] | None = None,
 ) -> dict:
-    """Build a compatible candidate while replacing V1 eligibility and setup."""
+    """Build a compatible candidate with timeframe-specific eligibility."""
     try:
         mode = normalize_timeframe(mode_tren)
         frame = prepared_tf
@@ -324,7 +323,7 @@ def analisa_saham_confluence(
 
         fail_reasons = []
         if not trend_valid:
-            fail_reasons.append("struktur tren V4")
+            fail_reasons.append("struktur tren timeframe")
         if not liquidity_valid:
             fail_reasons.append("likuiditas rupiah")
         if not price_valid:
@@ -358,6 +357,7 @@ def analisa_saham_confluence(
             "volatility": volatility_valid,
         }
         candidate.update({
+            "timeframe": mode,
             "entry_level": entry,
             "planned_entry": entry,
             "entry_type": "active" if active else "planned",
@@ -486,11 +486,11 @@ def _screen_timeframe(args: argparse.Namespace, pool: list[str], stocks: dict, i
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="V4 timeframe-specific IDX research screener")
+    parser = argparse.ArgumentParser(description="Final timeframe-specific IDX screener")
     parser.add_argument(
         "--timeframe", "--trend", dest="timeframe",
-        choices=["daily", "weekly", "monthly", *CANONICAL_TIMEFRAMES, "all"],
-        default="daily",
+        choices=["weekly", "monthly", "weekly_position", "monthly_long_term"],
+        default="weekly_position",
     )
     parser.add_argument("--ticker", default="", help="Optional ticker; ranking still uses the full universe")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
@@ -500,7 +500,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--output-dir", default="output/screener_v4")
+    parser.add_argument("--output-dir", default="output/screener")
     return parser.parse_args(argv)
 
 
@@ -508,9 +508,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.top < 1 or args.batch_size < 1 or args.workers < 1:
         raise ValueError("top, batch-size, dan workers harus positif")
-    if args.timeframe == "all" and not args.ticker:
-        raise ValueError("--timeframe all hanya untuk pemeriksaan satu ticker")
-
     pool = ambil_semua_ticker_dari_excel(args.excel)
     ihsg = download_ihsg(args.period)
     stocks = download_saham_batch(pool, args.period, args.batch_size)
@@ -519,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("Data pasar tidak tersedia")
 
     requested = normalisasi_ticker(args.ticker) if args.ticker else ""
-    modes = CANONICAL_TIMEFRAMES if args.timeframe == "all" else [normalize_timeframe(args.timeframe)]
+    modes = [normalize_timeframe(args.timeframe)]
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -1,38 +1,27 @@
-# Frozen Screener Entrypoint
+# Kontrak Screener Final
 
-The consolidated entrypoint routes one requested timeframe to its frozen paper
-candidate. It intentionally does not expose an unvalidated daily model.
+Hanya dua strategi yang masuk kode final:
 
-## Weekly
+- `weekly_position`: momentum ranking, hanya `Ready to Enter`, horizon 40 sesi.
+- `monthly_long_term`: momentum ranking final, horizon 126 sesi.
 
-```bash
-python3 scripts/financial_screener_final.py \
-  --timeframe weekly_position \
-  --period 10y \
-  --workers 8 \
-  --top 3 \
-  --output-dir output/paper_weekly_v5/latest
-```
-
-Run after the final weekly candle. The model returns zero to three Ready
-candidates and uses a 40-session outcome horizon.
-
-## Monthly
+Keduanya dijalankan melalui satu file:
 
 ```bash
-python3 scripts/financial_screener_final.py \
-  --timeframe monthly_long_term \
-  --period 10y \
-  --workers 8 \
-  --top 3 \
-  --output-dir output/paper_monthly_v1/latest
+python3 scripts/financial_screener.py --timeframe weekly_position \
+  --period 10y --workers 8 --top 3 \
+  --output-dir output/screener/weekly_latest
+
+python3 scripts/financial_screener.py --timeframe monthly_long_term \
+  --period 10y --workers 8 --top 3 \
+  --output-dir output/screener/monthly_latest
 ```
 
-Run after the final monthly candle. The model returns up to three valid
-candidates and uses a 126-session outcome horizon.
+Aturan final:
 
-## Daily
-
-`daily_swing` exits with an explicit error because V5 through V8 failed their
-aggregate development gates. It will remain unavailable until a genuinely new
-data-backed model is predeclared and validated.
+- Formula hasil backtest tidak diubah saat konsolidasi.
+- Maksimal tiga rekomendasi; nol rekomendasi adalah hasil valid.
+- Weekly tidak mengisi slot kosong dengan kandidat `Wait for Trigger`.
+- Hasil lama di `output/` dipertahankan sebagai audit.
+- Daily tidak tersedia pada entrypoint final dan akan diriset kembali secara
+  terpisah.

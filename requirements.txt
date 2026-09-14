@@ -2,4 +2,3 @@ yfinance[repair]
 pandas
 numpy
 openpyxl
-google-genai

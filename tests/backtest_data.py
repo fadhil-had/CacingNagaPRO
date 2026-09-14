@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Point-in-time backtester for the frozen IDX screener V1.
+"""Shared point-in-time data and signal backtest primitives.
 
-The script deliberately imports and reuses the V1 screener instead of copying
-its indicator logic. This keeps V1 frozen and makes the output suitable for
-deciding which indicators or thresholds should be changed in V2.
+The script imports the requested screener instead of copying its indicator
+logic, keeping signal formation and execution tests consistent.
 
-Full V1 evaluation for V2 research:
-    python tests/backtest_screener_v1.py \
-        --screener-file scripts/financial_screener.py \
+Full point-in-time evaluation:
+    python tests/backtest_data.py \
+        --screener-file scripts/screener_core.py \
         --excel resource/daftar-saham.xlsx \
         --timeframe all \
         --start 2016-01-01 \
@@ -153,7 +152,9 @@ def build_snapshot_history(
         }, index=index)
 
         liquidity_daily = frame.dropna(subset=["Close", "Volume"])
-        turnover = (liquidity_daily["Close"] * liquidity_daily["Volume"])
+        # Match the screener's causal liquidity filter: a signal candle must
+        # not make itself eligible by inflating its own turnover median.
+        turnover = (liquidity_daily["Close"] * liquidity_daily["Volume"]).shift(1)
         liquidity[ticker] = pd.DataFrame({
             "turnover20": turnover.rolling(20, min_periods=20).median(),
             "turnover60": turnover.rolling(60, min_periods=1).median(),
@@ -335,6 +336,7 @@ def candidate_sort_key(candidate: dict) -> tuple:
     return (
         float(candidate.get("quality_score", 0) or 0),
         float(candidate.get("rs_percentile", 0) or 0),
+        int(bool(candidate.get("adx_ok", False))),
         int(bool(candidate.get("breakout_ok", False))),
         float(candidate.get("vol_z", 0) or 0),
         float(candidate.get("turnover20", 0) or 0),
@@ -370,12 +372,23 @@ def evaluation_dates(
     return selected
 
 
-def rank_candidates(screener: ModuleType, candidates: list[dict]) -> list[dict]:
+def rank_candidates(
+    screener: ModuleType,
+    candidates: list[dict],
+    timeframe: str | None = None,
+) -> list[dict]:
+    ready_only = (
+        timeframe == "daily_swing"
+        and bool(getattr(screener, "DAILY_RECOMMEND_READY_ONLY", False))
+    )
+    accepted = (ready_status(screener),) if ready_only else (
+        ready_status(screener), wait_status(screener)
+    )
     if getattr(screener, "GLOBAL_RANKING", False):
         group = [
             candidate for candidate in candidates
             if normalize_status(screener, candidate.get("status", ""))
-            in (ready_status(screener), wait_status(screener))
+            in accepted
         ]
         ranked, _ = screener.ranking_candidates(group, limit=len(group))
         result = []
@@ -388,7 +401,6 @@ def rank_candidates(screener: ModuleType, candidates: list[dict]) -> list[dict]:
             result.append(copy)
         return result
 
-    accepted = (ready_status(screener), wait_status(screener))
     ranked: list[dict] = []
 
     for status in accepted:
@@ -484,7 +496,7 @@ def screen_snapshot(
     candidates = [result for result in analyzed if result is not None]
 
     candidates = screener.finalisasi_score_dan_status(candidates, timeframe, regime)
-    return rank_candidates(screener, candidates), regime
+    return rank_candidates(screener, candidates, timeframe), regime
 
 
 def signal_record(
@@ -1204,8 +1216,8 @@ def run_self_test() -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Point-in-time backtester for the IDX stock screener V1")
-    parser.add_argument("--screener-file", default="scripts/financial_screener.py", help="Path to the existing V1 screener (.py or .txt)")
+    parser = argparse.ArgumentParser(description="Point-in-time backtester for an IDX stock screener")
+    parser.add_argument("--screener-file", default="scripts/financial_screener.py", help="Path to the final screener module (.py or .txt)")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx", help="Ticker universe Excel file used by the screener")
     parser.add_argument("--tickers", default="", help="Optional comma-separated universe, for example BBCA,BBRI,TLKM")
     parser.add_argument("--timeframe", "--trend", dest="timeframe", choices=["daily_swing", "weekly_position", "monthly_long_term", "all"], default="all")
@@ -1224,7 +1236,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-selection-trades", type=int, default=30)
     parser.add_argument("--initial-capital", type=float, default=100_000_000)
     parser.add_argument("--max-positions", type=int, default=3)
-    parser.add_argument("--output-dir", default="output/backtest_v1_corrected")
+    parser.add_argument("--output-dir", default="output/backtest")
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
 

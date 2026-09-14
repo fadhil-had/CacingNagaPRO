@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Execution-valid V2.0 backtest for the frozen IDX screener V1 signals.
+"""Execution-valid backtest engine for the final IDX screeners.
 
-V2.0 deliberately does not change indicator rules.  It corrects execution:
+This engine does not change indicator rules. It models execution explicitly:
 planned setups trade only after their trigger, all fills include costs, and
 cancelled orders remain visible in the audit output.
 """
@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 
 
-ENGINE_VERSION = "2.7.0"
-V1_PATH = Path(__file__).with_name("backtest_screener_v1.py")
+ENGINE_VERSION = "2.8.0"
+V1_PATH = Path(__file__).with_name("backtest_data.py")
 HOLD_SELECTION_MIN_TRADES = {
     "daily_swing": 100,
     "weekly_position": 60,
@@ -42,12 +42,6 @@ WALK_FORWARD_COLUMNS = [
     "fold", "fit_start", "fit_end", "validation_start", "validation_end",
     *PORTFOLIO_SUMMARY_COLUMNS, "eligible_candidates", "skipped_candidates",
 ]
-READY_SETUP_FAMILIES = {
-    "all": frozenset(),
-    "breakout": frozenset({"Breakout Confirmed"}),
-    "pullback": frozenset({"Bullish Pullback/Reclaim"}),
-    "candlestick": frozenset({"Bullish Engulfing", "Hammer", "Marubozu Bullish"}),
-}
 UNIVERSE_AUDIT_COLUMNS = [
     "ticker", "in_current_excel", "in_membership_manifest", "membership_intervals",
     "member_at_backtest_start", "member_at_holdout_start", "member_at_backtest_end",
@@ -76,7 +70,7 @@ CADENCE_SUMMARY_COLUMNS = [
 
 def load_v1_runner() -> ModuleType:
     """Reuse V1's point-in-time screen formation, never its execution logic."""
-    spec = importlib.util.spec_from_file_location("backtest_screener_v1_base", V1_PATH)
+    spec = importlib.util.spec_from_file_location("backtest_data_base", V1_PATH)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load V1 runner: {V1_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -149,9 +143,11 @@ def find_entry(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, cfg: Execu
         return {"status": "NO_ENTRY_SESSION"}
 
     for date in sessions:
-        if date not in stock.index or float(stock.loc[date].get("Volume", 0)) <= 0:
+        if date not in stock.index or not float(stock.loc[date].get("Volume", 0)) > 0:
             return {"status": "MISSING_ENTRY_SESSION"}
         candle = stock.loc[date]
+        if not np.isfinite(candle[["Open", "High", "Low", "Close"]].to_numpy(dtype=float)).all():
+            return {"status": "MISSING_ENTRY_SESSION"}
         opening, high, low = (float(candle[key]) for key in ("Open", "High", "Low"))
         if entry_type == "active":
             base = opening
@@ -188,8 +184,15 @@ def simulate_signal(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, bars:
     entry_date, entry_price = pd.Timestamp(entry["entry_date"]), float(entry["entry_price"])
     stop, target = float(signal["stop_price"]), float(signal["target_price"])
     early_exit = float(signal.get("early_exit_price", np.nan))
-    path = stock.loc[entry_date:].head(days)
-    if len(path) < days:
+    tp1 = float(signal.get("tp1_price", np.nan))
+    tp1_date = pd.NaT
+    managed = False
+    market_clock = signal.get("execution_clock") == "market_sessions"
+    path = (
+        stock.reindex(ihsg.index[ihsg.index >= entry_date][:days])
+        if market_clock else stock.loc[entry_date:].head(days)
+    )
+    if len(path) < days and not market_clock:
         return empty_outcome(signal, bars, days, "INCOMPLETE_HOLD_DATA", entry_date=entry_date, entry_price=entry_price)
 
     exit_date = path.index[-1]
@@ -197,19 +200,25 @@ def simulate_signal(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, bars:
     reason = "MAX_HOLD"
     holding_sessions = days
     for holding_sessions, (date, candle) in enumerate(path.iterrows(), start=1):
+        if market_clock and (not np.isfinite(candle[["Open", "High", "Low", "Close", "Volume"]].to_numpy(dtype=float)).all() or candle["Volume"] <= 0):
+            continue
         opening, high, low = (float(candle[key]) for key in ("Open", "High", "Low"))
         if opening <= stop:
-            exit_date, exit_base, reason = date, opening, "STOP_GAP"
+            exit_date, exit_base, reason = date, opening, "STOP_BREAKEVEN_GAP" if managed else "STOP_GAP"
             break
         if opening >= target:
             exit_date, exit_base, reason = date, opening, "TARGET_GAP"
             break
+        # The open precedes the intrabar range. A TP1 hit later in the bar is
+        # only actionable next session; never invent the order of high and low.
+        if np.isfinite(tp1) and opening >= tp1 and not managed:
+            stop, managed, tp1_date = max(stop, entry_price), True, date
         stop_hit, target_hit = low <= stop, high >= target
         if stop_hit and target_hit:
             exit_date, exit_base, reason = date, (stop if cfg.same_bar_policy == "stop" else target), f"{cfg.same_bar_policy.upper()}_SAME_BAR"
             break
         if stop_hit:
-            exit_date, exit_base, reason = date, stop, "STOP"
+            exit_date, exit_base, reason = date, stop, "STOP_BREAKEVEN" if managed else "STOP"
             break
         if target_hit:
             exit_date, exit_base, reason = date, target, "TARGET"
@@ -217,6 +226,16 @@ def simulate_signal(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, bars:
         if np.isfinite(early_exit) and float(candle["Close"]) < early_exit:
             exit_date, exit_base, reason = date, float(candle["Close"]), "EARLY_INVALIDATION"
             break
+        if np.isfinite(tp1) and high >= tp1 and not managed:
+            stop, managed, tp1_date = max(stop, entry_price), True, date
+
+    if market_clock and reason == "MAX_HOLD":
+        if len(path) < days:
+            return empty_outcome(signal, bars, days, "INCOMPLETE_HOLD_DATA", order_status="TRIGGERED", entry_date=entry_date, entry_price=entry_price)
+        if not np.isfinite(path.iloc[-1][["Open", "High", "Low", "Close", "Volume"]].to_numpy(dtype=float)).all() or path.iloc[-1]["Volume"] <= 0:
+            return empty_outcome(signal, bars, days, "UNEXECUTABLE_TIME_EXIT", order_status="TRIGGERED", entry_date=entry_date, entry_price=entry_price)
+    if np.isfinite(tp1) and reason.startswith("TARGET") and pd.isna(tp1_date):
+        tp1_date = exit_date
 
     shares = cfg.lot_size
     exit_price = sell_fill(exit_base, cfg)
@@ -236,6 +255,7 @@ def simulate_signal(signal: dict, stock: pd.DataFrame, ihsg: pd.DataFrame, bars:
         "entry_fee": entry_fee, "exit_fee": exit_fee, "total_cost": entry_fee + exit_fee,
         "ihsg_return_pct": benchmark,
         "net_excess_vs_ihsg_pct": net_return - benchmark if np.isfinite(benchmark) else np.nan,
+        **({"tp1_hit_date": tp1_date, "managed_stop_price": stop} if np.isfinite(tp1) else {}),
     }
 
 
@@ -559,7 +579,7 @@ def select_holds_from_portfolio(
 
 
 def walk_forward_folds(start: pd.Timestamp, development_end: pd.Timestamp) -> list[dict[str, pd.Timestamp | str]]:
-    """Create the pre-registered expanding-window folds from BACKTEST_PLAN_V2."""
+    """Create deterministic expanding-window folds inside development data."""
     fit_ends = [
         start + pd.DateOffset(years=3) - pd.Timedelta(days=1),
         start + pd.DateOffset(years=5) - pd.Timedelta(days=1),
@@ -757,8 +777,7 @@ def write_analysis(
         ]
     else:
         selected = pd.DataFrame()
-    variant = metadata.get("screener_variant_id", "V2_FROZEN_BASELINE")
-    setup_family = metadata.get("ready_setup_family", "all")
+    variant = metadata.get("screener_variant_id", "FINAL_SCREENER")
     universe_note = (
         "- Universe uses an IPO/listing proxy and remains survivor-biased until historical delistings are supplied."
         if metadata.get("universe_membership_applied_per_snapshot")
@@ -766,7 +785,7 @@ def write_analysis(
     )
     lines = [
         "# Execution-Valid Screener Backtest", "", "## Scope", "",
-        f"- Screener variant: `{variant}`; Ready setup family: `{setup_family}`.",
+        f"- Screener model: `{variant}`.",
         f"- Fee per side: {metadata['fee_pct']:.3f}%; adverse slippage per side: {metadata['slippage_pct']:.3f}%.",
         "- Planned entries are no-trade unless the trigger occurs in their configured entry window.",
         universe_note, "", "## Selection summary", "",
@@ -791,7 +810,7 @@ def write_analysis(
                     f"| {row.timeframe} | {int(row.max_hold_bars)} | {row.profit_factor:.3f} | "
                     f"{row.cagr_excess_vs_ihsg_pct:.3f}% | {row.max_drawdown_pct:.3f}% |"
                 )
-    lines.extend(["", "No V2 screening parameter may be changed based on the confirmation period. See `BACKTEST_PLAN_V2.md`."])
+    lines.extend(["", "Do not change screening parameters based on the confirmation period."])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -871,7 +890,7 @@ def run_self_test() -> None:
     assert len(same_closed) == 1 and same_closed.iloc[0].exit_reason == "STOP_SAME_BAR"
     assert not bool(same_closed.iloc[0].get("forced_end", False))
     assert same_curve.iloc[-1].active_positions == 0
-    print("V2 self-test passed: trigger, cancellation, conservative exit, costs, capacity audit, same-session exit, and force-close.")
+    print("Backtest self-test passed: trigger, cancellation, conservative exit, costs, capacity audit, same-session exit, and force-close.")
 
 
 def canonical_ticker(value: object) -> str:
@@ -915,26 +934,6 @@ def active_manifest_tickers(
     ]
     available = set(available_pool)
     return sorted(set(eligible).intersection(available))
-
-
-def apply_ready_setup_family(
-    screener: ModuleType, candidates: list[dict], family: str,
-) -> list[dict]:
-    """Keep only a named setup family in Ready-to-Enter portfolio candidates.
-
-    Wait candidates are retained for audit visibility.  Ready candidates are
-    re-ranked after filtering so a rejected setup does not leave artificial
-    gaps in status_rank/top-N selection.
-    """
-    if family == "all":
-        return candidates
-    allowed = READY_SETUP_FAMILIES[family]
-    kept = [
-        candidate for candidate in candidates
-        if candidate.get("normalized_status") != V1.ready_status(screener)
-        or candidate.get("setup_name") in allowed
-    ]
-    return V1.rank_candidates(screener, kept)
 
 
 def build_manifest_breadth_history(
@@ -1179,7 +1178,7 @@ def write_point_in_time_audit(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Trigger-aware V2.0 IDX screener backtest")
+    parser = argparse.ArgumentParser(description="Trigger-aware IDX screener backtest")
     parser.add_argument("--screener-file", default="scripts/financial_screener.py")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
     parser.add_argument("--tickers", default="")
@@ -1192,14 +1191,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-capital", type=float, default=100_000_000); parser.add_argument("--max-positions", type=int, default=3)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.0, help="Risk budget at the planned stop as a percentage of current equity; 0 keeps equal-slot sizing")
     parser.add_argument("--max-position-pct", type=float, default=100.0, help="Maximum entry value per position as a percentage of current equity")
-    parser.add_argument("--output-dir", default="output/backtest_v2/v2_1_validation"); parser.add_argument("--walk-forward", action="store_true", help="Write expanding-window results using only the development period")
+    parser.add_argument("--output-dir", default="output/backtest/final"); parser.add_argument("--walk-forward", action="store_true", help="Write expanding-window results using only the development period")
     parser.add_argument("--replay-trades", default="", help="Rebuild portfolio and walk-forward outputs from a frozen V2 trades.csv")
     parser.add_argument("--audit-point-in-time", action="store_true", help="Write the Step 5 universe/data coverage audit and stop")
     parser.add_argument("--universe-manifest", default="", help="CSV with ticker,effective_start,effective_end historical membership intervals")
     parser.add_argument("--audit-output-dir", default="output/backtest_v2/v2_5_data_audit")
     parser.add_argument("--build-ipo-proxy-manifest", action="store_true", help="Build an IPO-corrected proxy manifest from the current IDX Excel and stop")
     parser.add_argument("--ipo-proxy-output", default="output/backtest_v2/v2_5_data_audit/ipo_proxy_manifest.csv")
-    parser.add_argument("--ready-setup-family", choices=sorted(READY_SETUP_FAMILIES), default="all", help="V3-B: restrict Ready-to-Enter/top-N candidates to one setup family")
+    parser.add_argument("--allow-empty", action="store_true", help="Record a valid zero-recommendation run instead of treating it as a runner error")
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
 
@@ -1214,8 +1213,6 @@ def main(argv: list[str] | None = None) -> int:
     screener = V1.load_screener(Path(args.screener_file))
     global HOLD_GRID
     HOLD_GRID = getattr(screener, "BACKTEST_HOLD_GRID", V1.TIMEFRAME_HOLDS)
-    if getattr(screener, "GLOBAL_RANKING", False) and args.ready_setup_family != "all":
-        raise ValueError("--ready-setup-family is a V3 ablation and is not valid for V4")
     pool = V1.normalize_tickers(args.tickers) if args.tickers else screener.ambil_semua_ticker_dari_excel(args.excel)
     pool = sorted(set(pool))[:args.max_tickers or None]
     source_pool = list(pool)
@@ -1309,9 +1306,6 @@ def main(argv: list[str] | None = None) -> int:
                             config, executor, history,
                             breadth_history=membership_breadth,
                         )
-                        candidates = apply_ready_setup_family(
-                            screener, candidates, args.ready_setup_family,
-                        )
                         for candidate in candidates:
                             row = V1.signal_record(candidate, regime, timeframe, date, args.top)
                             row["entry_window"] = screener.get_timeframe_config(timeframe)["entry_window"]
@@ -1334,7 +1328,29 @@ def main(argv: list[str] | None = None) -> int:
                     "active_universe_mean": float(np.mean(active_sizes)) if active_sizes else 0.0,
                 }
         if not signals:
-            raise RuntimeError("No eligible V1 signals were produced")
+            if not args.allow_empty:
+                raise RuntimeError("No eligible V1 signals were produced")
+            pd.DataFrame().to_csv(out / "signals.csv", index=False)
+            pd.DataFrame(errors).to_csv(out / "screen_errors.csv", index=False)
+            metadata = {
+                "backtest_engine_version": ENGINE_VERSION,
+                "execution": "not_run_no_published_recommendations",
+                "screener_file": args.screener_file,
+                "screener_sha256": hashlib.sha256(Path(args.screener_file).read_bytes()).hexdigest(),
+                "start": str(start.date()), "holdout_start": str(holdout.date()),
+                "end": str(end.date()), "top": args.top,
+                "universe_size_with_data": len(pool), "snapshot_counts": snapshot_counts,
+                "screen_errors": len(errors), "allow_empty": True,
+            }
+            (out / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+            (out / "EMPTY_RESULT.md").write_text(
+                "# No published recommendations\n\n"
+                "No `Ready to Enter` recommendation was produced in this interval. "
+                "This is a valid screening result, not a zero-return trade simulation.\n",
+                encoding="utf-8",
+            )
+            print(f"Backtest completed with no published recommendations: {out.resolve()}")
+            return 0
         signal_frame = pd.DataFrame(signals); signal_frame["screen_date"] = pd.to_datetime(signal_frame.screen_date); signal_frame["sample_split"] = np.where(signal_frame.screen_date < holdout, "SELECTION", "CONFIRMATION")
         outcomes = []
         signal_records = signal_frame.to_dict("records")
@@ -1395,14 +1411,14 @@ def main(argv: list[str] | None = None) -> int:
         walk_forward.to_csv(out / "walk_forward_summary.csv", index=False)
         audits.append(walk_forward_audit)
     pd.concat(audits, ignore_index=True).to_csv(out / "hold_selection_audit.csv", index=False)
-    metadata = {"backtest_engine_version": ENGINE_VERSION, "execution": "trigger_aware_cost_aware", "screener_file": args.screener_file, "screener_sha256": hashlib.sha256(Path(args.screener_file).read_bytes()).hexdigest(), "screener_variant_id": getattr(screener, "VARIANT_ID", "V2_FROZEN_BASELINE"), "ready_setup_family": args.ready_setup_family, "start": str(start.date()), "holdout_start": str(holdout.date()), "end": str(end.date()), "fee_pct": args.fee_pct, "slippage_pct": args.slippage_pct, "same_bar_policy": args.same_bar_policy, "initial_capital": args.initial_capital, "max_positions": args.max_positions, "risk_per_trade_pct": args.risk_per_trade_pct, "max_position_pct": args.max_position_pct, "primary_evaluation": "occasional_top_pick_recommendation_runs", "portfolio_candidate_policy": "ready_to_enter_top_pick_triggered", "hold_selection_policy": "secondary_constrained_portfolio_diagnostic", "hold_selection_minimum_trades": HOLD_SELECTION_MIN_TRADES, "hold_selection_minimum_pf": HOLD_SELECTION_MIN_PF, "hold_selection_maximum_drawdown_pct": HOLD_SELECTION_MAX_DRAWDOWN_PCT, "force_close_at_period_end": True, "walk_forward_requested": args.walk_forward, "universe_size_with_data": len(pool), "universe_membership_manifest": str(manifest_path) if manifest_path else None, "universe_membership_applied_per_snapshot": membership_manifest is not None, "market_data_cache": str(cache_path) if (args.use_cache or args.market_data_cache_file) else None, "snapshot_counts": snapshot_counts, "screen_errors": len(errors), "survivorship_bias": True, "universe_status": "IPO_PROXY_OR_HISTORICAL_MANIFEST_APPLIED_REVIEW_REQUIRED" if membership_manifest is not None else "POINT_IN_TIME_UNIVERSE_REQUIRED"}
+    metadata = {"backtest_engine_version": ENGINE_VERSION, "execution": "trigger_aware_cost_aware", "screener_file": args.screener_file, "screener_sha256": hashlib.sha256(Path(args.screener_file).read_bytes()).hexdigest(), "screener_variant_id": getattr(screener, "VARIANT_ID", "FINAL_SCREENER"), "start": str(start.date()), "holdout_start": str(holdout.date()), "end": str(end.date()), "fee_pct": args.fee_pct, "slippage_pct": args.slippage_pct, "same_bar_policy": args.same_bar_policy, "initial_capital": args.initial_capital, "max_positions": args.max_positions, "risk_per_trade_pct": args.risk_per_trade_pct, "max_position_pct": args.max_position_pct, "primary_evaluation": "occasional_top_pick_recommendation_runs", "portfolio_candidate_policy": "ready_to_enter_top_pick_triggered", "hold_selection_policy": "secondary_constrained_portfolio_diagnostic", "hold_selection_minimum_trades": HOLD_SELECTION_MIN_TRADES, "hold_selection_minimum_pf": HOLD_SELECTION_MIN_PF, "hold_selection_maximum_drawdown_pct": HOLD_SELECTION_MAX_DRAWDOWN_PCT, "force_close_at_period_end": True, "walk_forward_requested": args.walk_forward, "universe_size_with_data": len(pool), "universe_membership_manifest": str(manifest_path) if manifest_path else None, "universe_membership_applied_per_snapshot": membership_manifest is not None, "market_data_cache": str(cache_path) if (args.use_cache or args.market_data_cache_file) else None, "snapshot_counts": snapshot_counts, "screen_errors": len(errors), "survivorship_bias": True, "universe_status": "IPO_PROXY_OR_HISTORICAL_MANIFEST_APPLIED_REVIEW_REQUIRED" if membership_manifest is not None else "POINT_IN_TIME_UNIVERSE_REQUIRED"}
     (out / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     write_analysis(out / "backtest_analysis.md", policy_summary, metadata, selection_audit)
     write_recommendation_analysis(
         out / "recommendation_analysis.md", recommendation_summary,
         cadence_summary, metadata,
     )
-    print(f"V2 backtest completed: {out.resolve()}"); return 0
+    print(f"Backtest completed: {out.resolve()}"); return 0
 
 
 if __name__ == "__main__":
