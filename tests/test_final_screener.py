@@ -234,7 +234,7 @@ def test_grounded_news_sources_are_rendered_as_clickable_links():
     assert "[Source](https://example.com/news)" in result
 
 
-def test_weekly_only_publishes_ready_candidates():
+def test_weekly_prefers_ready_candidates_and_uses_wait_as_a_fallback():
     screener = load(ROOT / "scripts" / "financial_screener.py", "weekly_policy_test")
     candidates = [
         {"ticker": "READY.JK", "timeframe": "weekly_position",
@@ -247,6 +247,40 @@ def test_weekly_only_publishes_ready_candidates():
     selected, status = screener.ranking_candidates(candidates, limit=3)
     assert [candidate["ticker"] for candidate in selected] == ["READY.JK"]
     assert status == screener.STATUS_READY
+
+    selected, status = screener.ranking_candidates(candidates[1:], limit=3)
+    assert [candidate["ticker"] for candidate in selected] == ["WAIT.JK"]
+    assert status == screener.STATUS_WAIT
+
+
+def test_weekly_and_monthly_ignore_ihsg_as_a_hard_ranking_gate():
+    screener = load(ROOT / "scripts" / "financial_screener.py", "market_gate_test")
+    component_names = {
+        "weekly_position": ("rs_13", "rs_26", "high_52", "risk_adjusted_26"),
+        "monthly_long_term": ("rs_12_1", "high_52", "risk_adjusted_6"),
+    }
+
+    for mode, names in component_names.items():
+        candidate = {
+            "ticker": "LEADER.JK",
+            "timeframe": mode,
+            "hard_pass": True,
+            "hard_fail_reasons": [],
+            "conditions": {"trend": True, "setup": True},
+            "v4_setup_valid": True,
+            "v4_trigger_active": mode == "monthly_long_term",
+            "v4_components": {name: 1.0 for name in names},
+        }
+        regime = {"market_trend_ok": False, "regime": "BEARISH"}
+
+        screener.finalisasi_score_dan_status([candidate], mode, regime)
+
+        expected = (
+            screener.STATUS_READY
+            if mode == "monthly_long_term" else screener.STATUS_WAIT
+        )
+        assert candidate["status"] == expected
+        assert regime["market_trend_ok"] is False
 
 
 def test_monthly_keeps_validated_ranking_formula():

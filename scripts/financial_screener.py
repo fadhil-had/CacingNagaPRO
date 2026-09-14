@@ -357,7 +357,13 @@ def finalisasi_score_dan_status(
 ) -> list[dict]:
     mode = normalize_timeframe(mode_tren)
     if mode != "daily_swing":
-        return _BASE_FINALIZE(candidates, mode, market_regime)
+        # IHSG is context for position risk, not a veto on an individual stock.
+        # A bearish index can still contain valid relative-strength leaders.
+        # Keep the original regime untouched for CSV/report diagnostics, while
+        # preventing the shared finalizer from turning the whole universe into
+        # ``Skip - Trend`` solely because of the market-wide condition.
+        ranking_regime = {**market_regime, "market_trend_ok": True}
+        return _BASE_FINALIZE(candidates, mode, ranking_regime)
 
     # Historical validation ranks U0 before applying the rising-SMA50 gate.
     u0 = [candidate for candidate in candidates if candidate.get("daily_u0_pass")]
@@ -415,12 +421,7 @@ def analisa_market_regime(
 ) -> dict:
     regime = _BASE_MARKET_REGIME(ihsg_daily, mode_tren, breadth)
     mode = normalize_timeframe(mode_tren)
-    if mode == "weekly_position":
-        regime["market_trend_ok"] = bool(
-            regime.get("market_trend_ok", False)
-            and regime.get("regime") != "BEARISH"
-        )
-    if mode == "daily_swing":
+    if mode in {"daily_swing", "weekly_position", "monthly_long_term"}:
         regime["filter_role"] = "diagnostic_only"
     return regime
 
@@ -441,11 +442,15 @@ def ranking_candidates(candidates: list[dict], limit: int = 3):
         # Alphabetical display avoids implying that Rank 1 was better calibrated.
         return sorted(ranked, key=lambda item: item["ticker"]), STATUS_DAILY_WATCHLIST
 
-    weekly = mode == "weekly_position"
-    eligible = (
-        [item for item in candidates if item.get("status") == STATUS_READY]
-        if weekly else candidates
-    )
+    if mode == "weekly_position":
+        # Prefer actionable entries, but retain a ranked watchlist when no
+        # weekly breakout is active yet.
+        ready = [item for item in candidates if item.get("status") == STATUS_READY]
+        eligible = ready or [
+            item for item in candidates if item.get("status") == STATUS_WAIT
+        ]
+    else:
+        eligible = candidates
     return _BASE_RANKING_CANDIDATES(eligible, limit)
 
 
