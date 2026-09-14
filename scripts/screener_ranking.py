@@ -1,4 +1,4 @@
-"""Shared cross-sectional ranking model for weekly and monthly screeners.
+"""Shared cross-sectional ranking and runtime for the final screeners.
 
 It keeps the proven data-loading and execution contract from the baseline, but
 separates three concepts that the original confluence score mixed together:
@@ -489,7 +489,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Final timeframe-specific IDX screener")
     parser.add_argument(
         "--timeframe", "--trend", dest="timeframe",
-        choices=["weekly", "monthly", "weekly_position", "monthly_long_term"],
+        choices=[
+            "daily", "weekly", "monthly",
+            "daily_swing", "weekly_position", "monthly_long_term",
+        ],
         default="weekly_position",
     )
     parser.add_argument("--ticker", default="", help="Optional ticker; ranking still uses the full universe")
@@ -526,11 +529,20 @@ def main(argv: list[str] | None = None) -> int:
             shown = [candidate for candidate in candidates if candidate["ticker"] == requested]
         else:
             shown, _ = ranking_candidates(candidates, args.top)
-        simpan_csv(candidates, str(output_dir / f"{mode}.csv"), mode)
+        simpan_csv(candidates, str(output_dir / f"{mode}.csv"), mode, regime)
         if not shown:
             print(f"{mode}: tidak ada kandidat valid")
             continue
-        print("\n" + deterministic_report(shown, mode, regime))
+        deterministic = deterministic_report(shown, mode, regime)
+        ai_analysis = generate_gemini_analysis(shown, mode, regime)
+        report = (
+            f"{deterministic}\n\n{ai_analysis}"
+            if ai_analysis else deterministic
+        )
+        (output_dir / f"{mode}_report.md").write_text(
+            report + "\n", encoding="utf-8",
+        )
+        print("\n" + report)
     return 0
 
 

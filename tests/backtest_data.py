@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""Shared point-in-time data and signal backtest primitives.
+"""Internal point-in-time data and signal primitives for backtest_engine.py.
 
-The script imports the requested screener instead of copying its indicator
-logic, keeping signal formation and execution tests consistent.
-
-Full point-in-time evaluation:
-    python tests/backtest_data.py \
-        --screener-file scripts/screener_core.py \
-        --excel resource/daftar-saham.xlsx \
-        --timeframe all \
-        --start 2016-01-01 \
-        --holdout-start 2024-01-01 \
-        --end 2026-08-31
-
-The screener file may also have a .txt extension.
+The helper imports the requested screener instead of copying its indicators.
+Use ``python3 tests/backtest_engine.py`` for final cost-aware evaluation.
 """
 
 from __future__ import annotations
@@ -35,12 +24,12 @@ import pandas as pd
 
 
 TIMEFRAME_HOLDS = {
-    "daily_swing": [(5, 5), (10, 10), (15, 15)],
-    "weekly_position": [(4, 20), (8, 40), (12, 60)],
-    "monthly_long_term": [(3, 63), (6, 126), (9, 189)],
+    "daily_swing": [(10, 10)],
+    "weekly_position": [(8, 40)],
+    "monthly_long_term": [(6, 126)],
 }
 
-BACKTEST_ENGINE_VERSION = "2.1.0"
+BACKTEST_ENGINE_VERSION = "2.2.0"
 
 REQUIRED_SCREENER_API = (
     "ambil_semua_ticker_dari_excel",
@@ -331,6 +320,19 @@ def wait_status(screener: ModuleType) -> str:
     return getattr(screener, "STATUS_WAIT", "Wait for Trigger")
 
 
+def accepted_statuses(screener: ModuleType, timeframe: str | None) -> tuple[str, ...]:
+    """Statuses published by the selected final screener contract."""
+    if timeframe == "daily_swing" and hasattr(screener, "STATUS_DAILY_WATCHLIST"):
+        return (getattr(screener, "STATUS_DAILY_WATCHLIST"),)
+    ready_only = (
+        timeframe == "daily_swing"
+        and bool(getattr(screener, "DAILY_RECOMMEND_READY_ONLY", False))
+    )
+    return (ready_status(screener),) if ready_only else (
+        ready_status(screener), wait_status(screener),
+    )
+
+
 def candidate_sort_key(candidate: dict) -> tuple:
     """Match the screener's ranking_candidates ordering."""
     return (
@@ -377,13 +379,25 @@ def rank_candidates(
     candidates: list[dict],
     timeframe: str | None = None,
 ) -> list[dict]:
-    ready_only = (
-        timeframe == "daily_swing"
-        and bool(getattr(screener, "DAILY_RECOMMEND_READY_ONLY", False))
-    )
-    accepted = (ready_status(screener),) if ready_only else (
-        ready_status(screener), wait_status(screener)
-    )
+    accepted = accepted_statuses(screener, timeframe)
+    if timeframe == "daily_swing" and hasattr(screener, "STATUS_DAILY_WATCHLIST"):
+        group = [
+            candidate for candidate in candidates
+            if normalize_status(screener, candidate.get("status", "")) in accepted
+        ]
+        group.sort(key=lambda candidate: (
+            float(candidate.get("universe_rank", np.inf)),
+            -float(candidate.get("quality_score", 0) or 0),
+            candidate.get("ticker", ""),
+        ))
+        result = []
+        for rank, candidate in enumerate(group, start=1):
+            copy = dict(candidate)
+            copy["normalized_status"] = accepted[0]
+            copy["status_rank"] = rank
+            result.append(copy)
+        return result
+
     if getattr(screener, "GLOBAL_RANKING", False):
         group = [
             candidate for candidate in candidates
