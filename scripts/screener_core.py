@@ -1310,12 +1310,10 @@ def add_grounding_citations(response) -> str:
         sources.append(f"- [{safe_title}]({uri})")
     if sources:
         text += "\n\n### Sumber berita\n" + "\n".join(sources)
-    search_entry = getattr(metadata, "search_entry_point", None)
-    rendered_search = (
-        getattr(search_entry, "rendered_content", "") if search_entry else ""
-    )
-    if rendered_search:
-        text += "\n\n### Google Search\n" + rendered_search
+    # Gemini returns this field as an embeddable HTML/CSS widget. Reports are
+    # Markdown (including GitHub Step Summary), where rendering it would expose
+    # raw CSS instead of a useful search control. The citation links and source
+    # list above preserve the relevant, portable information.
     return text
 
 

@@ -222,9 +222,16 @@ def test_grounded_news_sources_are_rendered_as_clickable_links():
         "Support", (),
         {"segment": segment, "grounding_chunk_indices": [0]},
     )()
+    search_entry = type(
+        "SearchEntry", (), {"rendered_content": "<style>.widget {}</style>"},
+    )()
     metadata = type(
         "Metadata", (),
-        {"grounding_supports": [support], "grounding_chunks": [chunk]},
+        {
+            "grounding_supports": [support],
+            "grounding_chunks": [chunk],
+            "search_entry_point": search_entry,
+        },
     )()
     candidate = type("Candidate", (), {"grounding_metadata": metadata})()
     response = type(
@@ -236,6 +243,8 @@ def test_grounded_news_sources_are_rendered_as_clickable_links():
     assert "[1](https://example.com/news)" in result
     assert "### Sumber berita" in result
     assert "[Source](https://example.com/news)" in result
+    assert "<style>" not in result
+    assert "### Google Search" not in result
 
 
 def test_weekly_prefers_ready_candidates_and_uses_wait_as_a_fallback():
