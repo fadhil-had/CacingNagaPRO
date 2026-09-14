@@ -176,6 +176,31 @@ def _daily_prior_turnover(frame: pd.DataFrame) -> tuple[float, float]:
     return float(prior20.mean()), float(prior20.median())
 
 
+def _daily_price_options(
+    reference_price: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return user-selectable TP/SL prices, rounded to the IDX tick size."""
+    take_profit = tuple(
+        (percent, round_idx_price(reference_price * (1 + percent), "up"))
+        for percent in DAILY_TAKE_PROFIT_OPTIONS
+    )
+    stop_loss = tuple(
+        (percent, round_idx_price(reference_price * (1 - percent), "down"))
+        for percent in DAILY_STOP_LOSS_OPTIONS
+    )
+    return take_profit, stop_loss
+
+
+def _format_daily_price_options(
+    options: tuple[tuple[float, float], ...],
+    sign: str,
+) -> str:
+    return "<br>".join(
+        f"{sign}{percent:.0%}: {format_rupiah(price)}"
+        for percent, price in options
+    )
+
+
 def analisa_saham_confluence(
     ticker_code: str,
     df_saham: pd.DataFrame | None,
@@ -223,6 +248,9 @@ def analisa_saham_confluence(
 
         metrics = _daily_metrics(frame, ihsg_tf, np.nan)
         close = _RANKING._finite(frame.iloc[-1]["Close"])
+        support = _RANKING._finite(frame.iloc[-1].get("Support"), close)
+        resistance = _RANKING._finite(frame.iloc[-1].get("Resistance"), close)
+        take_profit_prices, stop_loss_prices = _daily_price_options(close)
         avg_turnover20, median_turnover20 = _daily_prior_turnover(frame)
         atr_pct = metrics["components"]["atr_pct"]
         # Daily thresholds are frozen. CLI thresholds remain configurable for
@@ -274,6 +302,10 @@ def analisa_saham_confluence(
             "confidence": "setara dalam Top 3",
             "take_profit_options": DAILY_TAKE_PROFIT_OPTIONS,
             "stop_loss_options": DAILY_STOP_LOSS_OPTIONS,
+            "take_profit_price_options": take_profit_prices,
+            "stop_loss_price_options": stop_loss_prices,
+            "support_level": support,
+            "resistance_level": resistance,
             "entry_level": np.nan,
             "planned_entry": np.nan,
             "entry_type": "not_validated",
@@ -437,26 +469,39 @@ def deterministic_report(
         ),
         "",
         "| Ticker | Score | Close | Ret60 Pctl | ATR Pctl | Dekat SMA20 Pctl | "
-        "Pilihan TP | Pilihan SL | Horizon |",
-        "| :--- | ---: | ---: | ---: | ---: | ---: | :--- | :--- | :--- |",
+        "TP dari Close | SL dari Close | Support 20D | Resistance 20D | Horizon |",
+        "| :--- | ---: | ---: | ---: | ---: | ---: | :--- | :--- | ---: | ---: | :--- |",
     ]
     for candidate in top_picks:
         ranks = candidate.get("rank_percentiles", {})
+        take_profit_prices = candidate.get("take_profit_price_options")
+        stop_loss_prices = candidate.get("stop_loss_price_options")
+        if not take_profit_prices or not stop_loss_prices:
+            take_profit_prices, stop_loss_prices = _daily_price_options(
+                _RANKING._finite(candidate.get("harga_terakhir")),
+            )
         lines.append(
             f"| {candidate['ticker'].replace('.JK', '')} | "
             f"{candidate['quality_score']:.1f}/100 | "
             f"{format_rupiah(candidate['harga_terakhir'])} | "
             f"{ranks.get('ret60', 0):.0f}% | "
             f"{ranks.get('atr_pct', 0):.0f}% | "
-            f"{ranks.get('near_sma20', 0):.0f}% | 3% / 5% / 10% | "
-            f"2% / 5% | maksimal 10 sesi |"
+            f"{ranks.get('near_sma20', 0):.0f}% | "
+            f"{_format_daily_price_options(take_profit_prices, '+')} | "
+            f"{_format_daily_price_options(stop_loss_prices, '-')} | "
+            f"{format_rupiah(candidate.get('support_level', np.nan))} | "
+            f"{format_rupiah(candidate.get('resistance_level', np.nan))} | "
+            "maksimal 10 sesi |"
         )
     lines.extend([
         "",
         "*Ketiga saham adalah satu set Top 3 dengan tingkat keyakinan setara; "
         "urutan tabel bukan ranking keyakinan.*",
-        "*TP dan SL adalah pilihan risk management dari harga entry aktual. "
-        "Sistem tidak memilihkan kombinasi dan tidak menganggapnya tervalidasi.*",
+        "*TP dan SL dihitung dari harga penutupan sebagai referensi, lalu dibulatkan "
+        "ke fraksi harga BEI. User menentukan sendiri kombinasi yang dipakai; "
+        "ini bukan instruksi atau level eksekusi tervalidasi.*",
+        "*Support dan resistance adalah low/high rolling 20 sesi, bukan kepastian "
+        "harga akan berbalik atau menembus level tersebut.*",
         "*Backtest tidak menjamin hasil berikutnya.*",
     ])
     return "\n".join(lines)

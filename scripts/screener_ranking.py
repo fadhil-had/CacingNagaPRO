@@ -497,7 +497,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ticker", default="", help="Optional ticker; ranking still uses the full universe")
     parser.add_argument("--excel", default="resource/daftar-saham.xlsx")
-    parser.add_argument("--period", choices=["10y", "max"], default="10y")
+    parser.add_argument("--period", choices=["2y", "5y", "10y", "max"], default="10y")
     parser.add_argument("--min-turnover", type=float, default=1_000_000_000)
     parser.add_argument("--min-price", type=float, default=100)
     parser.add_argument("--top", type=int, default=3)

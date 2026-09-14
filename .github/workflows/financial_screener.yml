@@ -65,20 +65,56 @@ jobs:
             echo "Unknown workflow trigger: $EVENT_NAME / $EVENT_SCHEDULE" >&2
             exit 1
           fi
+          case "$timeframe" in
+            daily_swing) period="2y" ;;        # needs at least 260 daily bars
+            weekly_position) period="5y" ;;    # needs at least 120 weekly bars
+            monthly_long_term) period="10y" ;; # needs at least 72 monthly bars
+          esac
           echo "timeframe=$timeframe" >> "$GITHUB_OUTPUT"
+          echo "period=$period" >> "$GITHUB_OUTPUT"
 
       - name: Run final screener
         env:
           SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
+          SELECTED_PERIOD: ${{ steps.config.outputs.period }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
         run: |
           python3 scripts/financial_screener.py \
             --timeframe "$SELECTED_TIMEFRAME" \
-            --period 10y \
+            --period "$SELECTED_PERIOD" \
             --workers 8 \
             --top 3 \
             --output-dir "output/screener/$SELECTED_TIMEFRAME"
+
+      - name: Publish result summary
+        if: always()
+        env:
+          SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
+          SELECTED_PERIOD: ${{ steps.config.outputs.period }}
+        run: |
+          result_dir="output/screener/$SELECTED_TIMEFRAME"
+          report="$result_dir/${SELECTED_TIMEFRAME}_report.md"
+          csv="$result_dir/${SELECTED_TIMEFRAME}.csv"
+          {
+            echo "## IDX Stock Screener"
+            echo
+            echo "| Parameter | Nilai |"
+            echo "| :--- | :--- |"
+            echo "| Timeframe | \`$SELECTED_TIMEFRAME\` |"
+            echo "| Market-data period | \`$SELECTED_PERIOD\` |"
+            echo
+            if [ -f "$report" ]; then
+              echo "### Hasil"
+              cat "$report"
+            elif [ -f "$csv" ]; then
+              echo "### Hasil"
+              echo "Tidak ada kandidat valid untuk masuk Top 3 pada run ini."
+            else
+              echo "### Hasil tidak tersedia"
+              echo "Screener tidak menghasilkan file output; periksa log step **Run final screener**."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload result
         uses: actions/upload-artifact@v4

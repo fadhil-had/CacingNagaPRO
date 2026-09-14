@@ -101,9 +101,12 @@ def test_daily_top_three_is_displayed_as_equal_watchlist_without_trade_levels():
     assert all(item["selected_top3"] for item in selected)
     assert status == screener.STATUS_DAILY_WATCHLIST
     assert "tingkat keyakinan setara" in report
-    assert "3% / 5% / 10%" in report
-    assert "2% / 5%" in report
-    assert "harga entry aktual" in report
+    assert "+3%: Rp 1.030" in report
+    assert "+5%: Rp 1.050" in report
+    assert "+10%: Rp 1.100" in report
+    assert "-2%: Rp 980" in report
+    assert "-5%: Rp 950" in report
+    assert "User menentukan sendiri kombinasi" in report
     assert "| Entry |" not in report
 
 

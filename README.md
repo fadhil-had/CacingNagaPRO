@@ -20,7 +20,7 @@ Daily dijalankan setelah sesi bursa selesai:
 ```bash
 python3 scripts/financial_screener.py \
   --timeframe daily_swing \
-  --period 10y --workers 8 --top 3 \
+  --period 2y --workers 8 --top 3 \
   --output-dir output/screener/daily_latest
 ```
 
@@ -29,7 +29,7 @@ Weekly dijalankan setelah candle Jumat selesai:
 ```bash
 python3 scripts/financial_screener.py \
   --timeframe weekly_position \
-  --period 10y --workers 8 --top 3 \
+  --period 5y --workers 8 --top 3 \
   --output-dir output/screener/weekly_latest
 ```
 
