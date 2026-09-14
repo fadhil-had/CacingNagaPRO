@@ -1369,12 +1369,18 @@ def generate_gemini_analysis(top_picks, mode_tren, market_regime) -> str:
             )
         },
         "locked_candidates": locked_candidates,
+        "ai_discovery_contract": {
+            "enabled_only_when_screened_news_is_weak": True,
+            "max_candidates": 3,
+            "exclude_locked_tickers": [item["ticker"] for item in locked_candidates],
+            "label": "Kandidat AI dari berita dan percakapan publik — perlu riset",
+        },
     }
     system_instruction = (
         "Anda adalah lapisan penjelasan untuk screener teknikal saham BEI. "
         "Data JSON adalah hasil final yang terkunci. Jangan menambah, menghapus, "
         "mengurutkan ulang, atau mengganti ticker, status, score, harga, horizon, "
-        "entry, TP, maupun SL. Jangan mengeluarkan rekomendasi saham baru. "
+        "entry, TP, maupun SL pada locked_candidates. "
         "Gunakan Google Search untuk mencari berita material terbaru bagi setiap "
         "ticker, utamakan 30 hari terakhir dan sumber primer/resmi seperti BEI, "
         "keterbukaan informasi emiten, regulator, atau situs perusahaan. Berita "
@@ -1382,8 +1388,19 @@ def generate_gemini_analysis(top_picks, mode_tren, market_regime) -> str:
         "citation; bila tidak ada berita kredibel, katakan demikian dan jangan "
         "mengarang katalis. Untuk daily, IHSG hanya diagnostik dan TP/SL adalah "
         "opsi user, bukan prediksi sistem. "
+        "Setelah menilai berita untuk locked_candidates, bila berita/katalisnya "
+        "kurang mendukung atau tidak cukup kredibel, telusuri saham IDX lain yang "
+        "sedang ramai di berita atau percakapan publik yang dapat dicari secara "
+        "terbuka. Percakapan sosial hanya sinyal perhatian, bukan fakta atau validasi. "
+        "Dalam kondisi itu tambahkan bagian '## Kandidat AI dari Berita & Percakapan "
+        "Publik — Perlu Riset' dengan maksimal tiga ticker IDX yang berbeda dari "
+        "locked_candidates. Untuk tiap ticker, tulis alasan perhatian, risiko, dan "
+        "citation sumbernya. Jangan mengisi slot tanpa sumber kredibel, jangan memberi "
+        "entry/target/stop, dan jangan menyebut kandidat AI sebagai hasil screener atau "
+        "rekomendasi beli. Jika berita Top 3 cukup mendukung, atau kandidat baru tidak "
+        "dapat diverifikasi, tulis alasan dan jangan menambahkan ticker. "
         "Tulis dalam Bahasa Indonesia dengan format: '## Analisis AI', ringkasan "
-        "market 2-3 kalimat, lalu satu bullet per ticker berisi alasan teknikal, "
+        "market 2-3 kalimat, lalu satu bullet per locked ticker berisi alasan teknikal, "
         "risiko utama, dan hal yang perlu dipantau. Akhiri disclaimer singkat."
     )
     primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()

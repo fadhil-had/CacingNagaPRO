@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ def test_final_screener_exposes_all_three_frozen_horizons():
         "near_sma20": 1 / 3,
     }
     assert screener.parse_args(["--timeframe", "daily_swing"]).timeframe == "daily_swing"
+    assert screener.parse_args(["--ticker", "BBRI"]).ticker == "BBRI"
 
 
 def test_daily_score_uses_u0_universe_and_ignores_market_gate():
@@ -206,6 +208,8 @@ def test_ai_reporting_is_commentary_only_and_uses_locked_payload(monkeypatch):
     assert captured["model"] == "gemini-2.5-flash-lite"
     assert '"ticker": "TEST"' in captured["contents"]
     assert '"take_profit_options_pct": [3, 5, 10]' in captured["contents"]
+    assert '"max_candidates": 3' in captured["contents"]
+    assert "Kandidat AI dari Berita" in captured["config"].values["system_instruction"]
     assert captured["config"].values["tools"]
 
 
@@ -281,6 +285,38 @@ def test_weekly_and_monthly_ignore_ihsg_as_a_hard_ranking_gate():
         )
         assert candidate["status"] == expected
         assert regime["market_trend_ok"] is False
+
+
+def test_single_ticker_writes_three_timeframe_report_and_csv(tmp_path, monkeypatch):
+    screener = load(ROOT / "scripts" / "financial_screener.py", "single_ticker_test")
+    index = pd.bdate_range("2014-01-02", periods=3_000)
+    close = pd.Series(np.linspace(500, 1_500, len(index)), index=index)
+    raw = pd.DataFrame({
+        "Open": close * 0.995,
+        "High": close * 1.01,
+        "Low": close * 0.99,
+        "Close": close,
+        "Volume": 30_000_000,
+    })
+    monkeypatch.setattr(screener, "download_ihsg", lambda _: raw)
+    monkeypatch.setattr(screener, "download_satu_saham", lambda *_: raw)
+    monkeypatch.setattr(
+        screener,
+        "analisa_market_regime",
+        lambda *_: {"regime": "BEARISH", "market_trend_ok": False},
+    )
+    monkeypatch.setattr(screener, "_single_stock_ai_analysis", lambda *_: "")
+    args = SimpleNamespace(
+        ticker="BBRI", min_turnover=1_000_000_000, min_price=100,
+        output_dir=str(tmp_path),
+    )
+
+    assert screener.run_single_stock_analysis(args) == 0
+    report = (tmp_path / "single_stock_report.md").read_text(encoding="utf-8")
+    csv = pd.read_csv(tmp_path / "single_stock.csv")
+    assert "daily_swing" in report and "weekly_position" in report
+    assert "monthly_long_term" in report
+    assert set(csv["timeframe"]) == set(screener.BACKTEST_HOLD_GRID)
 
 
 def test_monthly_keeps_validated_ranking_formula():

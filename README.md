@@ -53,6 +53,16 @@ Menu **Run workflow** juga menyediakan pilihan `daily_swing`,
 self-test backtest sebelum screening, lalu mengunggah CSV sebagai artifact
 selama 90 hari.
 
+### Analisis satu saham
+
+Pada **Run workflow**, isi **Kode saham** (misalnya `BBRI`) untuk menjalankan
+analisis satu saham pada `daily_swing`, `weekly_position`, dan
+`monthly_long_term` sekaligus. Pilihan timeframe diabaikan untuk mode ini dan
+data 10 tahun dipakai agar candle monthly cukup. Artifact berisi
+`single_stock_report.md` dan `single_stock.csv`. Bila `GEMINI_API_KEY` tersedia,
+laporan juga menyertakan analisis AI dan berita terbaru dengan sumber Google
+Search.
+
 ## Laporan AI
 
 Laporan numerik deterministik selalu dibuat lebih dahulu dan menjadi sumber
@@ -62,10 +72,24 @@ teknikal, katalis, risiko, dan hal yang perlu dipantau. Laporan menyertakan link
 sumber pencarian. AI tidak boleh mengubah ticker, ranking, status, score,
 horizon, atau level dari program.
 
+Jika berita untuk Top 3 kurang mendukung, AI dapat menambahkan maksimal tiga
+**kandidat riset** IDX yang sedang mendapat perhatian dari berita atau
+percakapan publik terbuka. Kandidat ini wajib berbeda dari Top 3 dan memiliki
+sumber; ini bukan hasil screener, bukan rekomendasi beli, dan tidak memiliki
+level entry/stop/target sebelum disaring secara teknikal.
+
 Untuk GitHub Actions, tambahkan repository secret `GEMINI_API_KEY`. Repository
 variable `GEMINI_MODEL` bersifat opsional; default-nya
 `gemini-2.5-flash-lite`. Jika key, dependency, atau model bermasalah, proses
 tetap berhasil menggunakan laporan deterministik.
+
+Saat menjalankan workflow secara manual, **Model Gemini** dan **API key Gemini**
+juga dapat diisi. Model kustom hanya dipakai bila API key manual ikut diisi.
+Jika API key manual kosong, workflow mengabaikan input model dan selalu memakai
+`gemini-2.5-flash-lite` dengan `GEMINI_API_KEY` repository. Model kustom harus
+kompatibel dengan Gemini API. Untuk pemakaian berulang, simpan key sebagai
+repository secret—input manual lebih cocok untuk penggunaan sekali jalan dan
+tidak seaman secret repository.
 
 Google Search grounding dapat menambah biaya pemakaian Gemini API. Pencarian
 memprioritaskan sumber primer seperti BEI, keterbukaan informasi emiten,

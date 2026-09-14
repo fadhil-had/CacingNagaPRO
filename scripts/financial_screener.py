@@ -7,6 +7,8 @@ checks. Daily is deliberately a D+10 watchlist, not an automatic trade system.
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -512,6 +514,212 @@ def deterministic_report(
     return "\n".join(lines)
 
 
+def _single_stock_status(candidate: dict, mode: str) -> str:
+    """Set a per-stock status without inventing a universe percentile."""
+    if mode == "daily_swing":
+        if not candidate.get("daily_u0_pass"):
+            return tentukan_status_skip(candidate.get("hard_fail_reasons", []))
+        if not candidate.get("hard_pass"):
+            return STATUS_SKIP_TREND
+        return STATUS_DAILY_WATCHLIST
+    if not candidate.get("hard_pass"):
+        return tentukan_status_skip(candidate.get("hard_fail_reasons", []))
+    if not candidate.get("v4_setup_valid"):
+        return STATUS_SKIP_SETUP
+    return STATUS_READY if candidate.get("v4_trigger_active") else STATUS_WAIT
+
+
+def _single_stock_report(ticker: str, results: dict[str, dict]) -> str:
+    lines = [
+        f"### IDX Stock Report — {ticker.replace('.JK', '')} (Multi-Timeframe)",
+        "",
+        "| Timeframe | Status | Close | Entry / Trigger | Stop | Target | Setup |",
+        "| :--- | :--- | ---: | :--- | ---: | ---: | :--- |",
+    ]
+    for mode in BACKTEST_HOLD_GRID:
+        entry = results[mode]
+        if entry.get("error"):
+            lines.append(
+                f"| {mode} | ERROR | - | - | - | - | {entry['error']} |"
+            )
+            continue
+        candidate = entry["candidate"]
+        if mode == "daily_swing":
+            trigger = "Referensi close"
+        else:
+            trigger = format_rupiah(candidate.get("trigger_price", np.nan))
+        lines.append(
+            f"| {mode} | {candidate['status']} | "
+            f"{format_rupiah(candidate.get('harga_terakhir', np.nan))} | "
+            f"{trigger} | {format_rupiah(candidate.get('stop_level', np.nan))} | "
+            f"{format_rupiah(candidate.get('target_price', np.nan))} | "
+            f"{candidate.get('setup_name', '-')} |"
+        )
+
+    lines.extend(["", "**Diagnosis per timeframe:**"])
+    for mode in BACKTEST_HOLD_GRID:
+        entry = results[mode]
+        if entry.get("error"):
+            lines.append(f"- **{mode}** — gagal: {entry['error']}")
+            continue
+        candidate, regime = entry["candidate"], entry["regime"]
+        hard = "; ".join(candidate.get("hard_fail_reasons", [])) or "semua lolos"
+        lines.append(
+            f"- **{mode}** — IHSG {regime.get('regime', '-')} "
+            f"(diagnostik), RSI {candidate.get('rsi', np.nan):.1f}, "
+            f"RS excess {format_pct(candidate.get('rs_excess', np.nan))}, "
+            f"ATR {format_pct(candidate.get('atr_pct', np.nan))}. "
+            f"Filter: {hard}."
+        )
+        if mode == "daily_swing":
+            take_profit, stop_loss = _daily_price_options(
+                _RANKING._finite(candidate.get("harga_terakhir")),
+            )
+            lines.append(
+                "  Opsi dari close: TP "
+                f"{_format_daily_price_options(take_profit, '+')}; SL "
+                f"{_format_daily_price_options(stop_loss, '-')}."
+            )
+    lines.extend([
+        "",
+        "*Mode saham tunggal adalah diagnosis teknikal, bukan ranking atau jaminan "
+        "masuk Top 3 universe. IHSG hanya konteks risiko, bukan hard filter.*",
+        "*Level dan analisis bersifat informatif; tetap gunakan manajemen risiko.*",
+    ])
+    return "\n".join(lines)
+
+
+def _single_stock_ai_analysis(ticker: str, results: dict[str, dict]) -> str:
+    """Add one grounded news-aware AI analysis for all three timeframes."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None or types is None:
+        reason = "GEMINI_API_KEY tidak ada" if not api_key else "google-genai tidak tersedia"
+        print(f"ℹ️ {reason}; laporan tetap deterministik.")
+        return ""
+
+    timeframes = []
+    for mode in BACKTEST_HOLD_GRID:
+        entry = results[mode]
+        if entry.get("error"):
+            timeframes.append({"timeframe": mode, "error": entry["error"]})
+            continue
+        candidate = entry["candidate"]
+        timeframes.append({
+            "timeframe": mode,
+            "status": candidate["status"],
+            "close": candidate.get("harga_terakhir"),
+            "setup": candidate.get("setup_name"),
+            "trigger": candidate.get("trigger_price"),
+            "entry": candidate.get("entry_level"),
+            "stop": candidate.get("stop_level"),
+            "target": candidate.get("target_price"),
+            "relative_strength_excess": candidate.get("rs_excess"),
+            "technical_conditions": candidate.get("kondisi_detail", ""),
+            "market_regime": entry["regime"].get("regime"),
+        })
+    payload = {
+        "analysis_date_wib": str(pd.Timestamp.now(tz="Asia/Jakarta").date()),
+        "ticker": ticker.replace(".JK", ""),
+        "timeframes": timeframes,
+    }
+    instruction = (
+        "Anda adalah lapisan penjelasan untuk analisis teknikal saham BEI. "
+        "Data JSON adalah hasil program yang terkunci: jangan mengubah status, "
+        "harga, trigger, entry, stop, atau target; jangan memberi target harga baru. "
+        "Gunakan Google Search untuk mencari berita material terbaru ticker tersebut, "
+        "utamakan 30 hari terakhir dan sumber primer (BEI, keterbukaan informasi, "
+        "regulator, atau situs perusahaan). Setiap klaim berita harus memiliki citation; "
+        "bila tidak ada sumber kredibel, katakan demikian. Tulis dalam Bahasa Indonesia "
+        "dengan format: '## Analisis AI & Berita', ringkasan confluence daily/weekly/monthly, "
+        "katalis atau risiko berita, lalu hal yang perlu dipantau. Akhiri disclaimer singkat."
+    )
+    client = genai.Client(api_key=api_key)
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    models = [primary_model] + ([] if primary_model == "gemini-2.5-flash" else ["gemini-2.5-flash"])
+    for model in models:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=json.dumps(payload, ensure_ascii=False, default=str),
+                config=types.GenerateContentConfig(
+                    system_instruction=instruction,
+                    temperature=0.2,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            report = add_grounding_citations(response)
+            if report:
+                print(f"🤖 Analisis AI multi-timeframe dibuat dengan {model}.")
+                return report
+        except Exception as exc:
+            print(f"⚠️ Analisis AI multi-timeframe dengan {model} gagal: {exc}")
+    print("ℹ️ Semua model Gemini gagal; laporan tetap deterministik.")
+    return ""
+
+
+def run_single_stock_analysis(args) -> int:
+    """Analyze one IDX ticker on all final timeframes, including grounded AI news."""
+    ticker = normalisasi_ticker(args.ticker)
+    if not ticker:
+        raise ValueError("--ticker harus berisi kode saham, misalnya BBRI")
+
+    period = "10y"  # Monthly needs at least 72 completed monthly candles.
+    ihsg = download_ihsg(period)
+    stock = download_satu_saham(ticker, period)
+    if ihsg.empty or stock.empty:
+        raise RuntimeError(f"Data pasar tidak tersedia untuk {ticker}")
+
+    breadth = {
+        "breadth50": np.nan, "breadth200": np.nan,
+        "median_return20": np.nan, "jumlah_saham_breadth": 0,
+    }
+    results: dict[str, dict] = {}
+    for mode in BACKTEST_HOLD_GRID:
+        try:
+            ihsg_tf = siapkan_data_untuk_timeframe(ihsg, mode)
+            prepared = siapkan_data_untuk_timeframe(stock, mode)
+            regime = analisa_market_regime(ihsg, mode, breadth)
+            candidate = analisa_saham_confluence(
+                ticker, stock, ihsg_tf, mode, args.min_turnover, args.min_price,
+                prepared_tf=prepared,
+            )
+            if candidate.get("error"):
+                raise ValueError(candidate.get("alasan", "analisis gagal"))
+            candidate["status"] = _single_stock_status(candidate, mode)
+            candidate["quality_score"] = np.nan
+            candidate["rs_percentile"] = np.nan
+            results[mode] = {"candidate": candidate, "regime": regime}
+        except Exception as exc:
+            results[mode] = {"error": str(exc)}
+
+    report = _single_stock_report(ticker, results)
+    ai_report = _single_stock_ai_analysis(ticker, results)
+    if ai_report:
+        report = f"{report}\n\n{ai_report}"
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "single_stock_report.md").write_text(report + "\n", encoding="utf-8")
+    rows = []
+    for mode, entry in results.items():
+        if entry.get("error"):
+            rows.append({"ticker": ticker, "timeframe": mode, "status": "ERROR", "error": entry["error"]})
+            continue
+        candidate, regime = entry["candidate"], entry["regime"]
+        rows.append({
+            "ticker": ticker, "timeframe": mode, "status": candidate["status"],
+            "close": candidate.get("harga_terakhir"), "trigger": candidate.get("trigger_price"),
+            "entry": candidate.get("entry_level"), "stop": candidate.get("stop_level"),
+            "target": candidate.get("target_price"), "setup": candidate.get("setup_name"),
+            "rs_excess": candidate.get("rs_excess"), "atr_pct": candidate.get("atr_pct"),
+            "hard_pass": candidate.get("hard_pass"),
+            "hard_fail_reasons": ";".join(candidate.get("hard_fail_reasons", [])),
+            "market_regime": regime.get("regime"),
+        })
+    pd.DataFrame(rows).to_csv(output_dir / "single_stock.csv", index=False)
+    print("\n" + report)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     mode = normalize_timeframe(args.timeframe)
@@ -519,6 +727,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("Timeframe tidak didukung")
     if not 1 <= args.top <= 3:
         raise ValueError("--top harus antara 1 dan 3")
+    if args.ticker.strip():
+        return run_single_stock_analysis(args)
     return _BASE_MAIN(argv)
 
 

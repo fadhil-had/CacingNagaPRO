@@ -20,6 +20,21 @@ on:
           - daily_swing
           - weekly_position
           - monthly_long_term
+      ticker:
+        description: 'Opsional: kode saham untuk analisis daily, weekly, monthly, dan berita AI (mis. BBRI)'
+        required: false
+        default: ''
+        type: string
+      gemini_model:
+        description: 'Model Gemini sendiri (mis. gemini-2.5-flash); hanya dipakai bila API key sendiri diisi.'
+        required: false
+        default: ''
+        type: string
+      gemini_api_key:
+        description: 'Opsional: API key Gemini sendiri. Kosong = GEMINI_API_KEY repository.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   screen-stocks:
@@ -52,6 +67,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           MANUAL_TIMEFRAME: ${{ inputs.timeframe }}
+          TICKER: ${{ inputs.ticker }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             timeframe="$MANUAL_TIMEFRAME"
@@ -70,6 +86,9 @@ jobs:
             weekly_position) period="5y" ;;    # needs at least 120 weekly bars
             monthly_long_term) period="10y" ;; # needs at least 72 monthly bars
           esac
+          if [ -n "$TICKER" ]; then
+            period="10y"  # Analisis ticker mencakup monthly (>=72 candle).
+          fi
           echo "timeframe=$timeframe" >> "$GITHUB_OUTPUT"
           echo "period=$period" >> "$GITHUB_OUTPUT"
 
@@ -77,14 +96,20 @@ jobs:
         env:
           SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
           SELECTED_PERIOD: ${{ steps.config.outputs.period }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
+          GEMINI_API_KEY: ${{ inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ inputs.gemini_api_key && (inputs.gemini_model || 'gemini-2.5-flash-lite') || 'gemini-2.5-flash-lite' }}
+          TICKER: ${{ inputs.ticker }}
         run: |
+          extra_args=()
+          if [ -n "$TICKER" ]; then
+            extra_args=(--ticker "$TICKER")
+          fi
           python3 scripts/financial_screener.py \
             --timeframe "$SELECTED_TIMEFRAME" \
             --period "$SELECTED_PERIOD" \
             --workers 8 \
             --top 3 \
+            "${extra_args[@]}" \
             --output-dir "output/screener/$SELECTED_TIMEFRAME"
 
       - name: Publish result summary
@@ -92,10 +117,16 @@ jobs:
         env:
           SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
           SELECTED_PERIOD: ${{ steps.config.outputs.period }}
+          TICKER: ${{ inputs.ticker }}
         run: |
           result_dir="output/screener/$SELECTED_TIMEFRAME"
-          report="$result_dir/${SELECTED_TIMEFRAME}_report.md"
-          csv="$result_dir/${SELECTED_TIMEFRAME}.csv"
+          if [ -n "$TICKER" ]; then
+            report="$result_dir/single_stock_report.md"
+            csv="$result_dir/single_stock.csv"
+          else
+            report="$result_dir/${SELECTED_TIMEFRAME}_report.md"
+            csv="$result_dir/${SELECTED_TIMEFRAME}.csv"
+          fi
           {
             echo "## IDX Stock Screener"
             echo
@@ -103,6 +134,9 @@ jobs:
             echo "| :--- | :--- |"
             echo "| Timeframe | \`$SELECTED_TIMEFRAME\` |"
             echo "| Market-data period | \`$SELECTED_PERIOD\` |"
+            if [ -n "$TICKER" ]; then
+              echo "| Kode saham | \`$TICKER\` (analisis 3 timeframe) |"
+            fi
             echo
             if [ -f "$report" ]; then
               echo "### Hasil"
