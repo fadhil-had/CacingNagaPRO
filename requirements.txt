@@ -2,3 +2,4 @@ yfinance[repair]
 pandas
 numpy
 openpyxl
+pytest

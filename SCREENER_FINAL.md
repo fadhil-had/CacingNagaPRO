@@ -1,13 +1,18 @@
 # Kontrak Screener Final
 
-Hanya dua strategi yang masuk kode final:
+Satu entrypoint menyediakan tiga strategi yang dibekukan:
 
-- `weekly_position`: momentum ranking, hanya `Ready to Enter`, horizon 40 sesi.
-- `monthly_long_term`: momentum ranking final, horizon 126 sesi.
+- `daily_swing`: watchlist Top 3 setara, skor minimal 80, maksimal D+10;
+- `weekly_position`: momentum ranking, hanya `Ready to Enter`, horizon 40 sesi;
+- `monthly_long_term`: momentum ranking jangka panjang, horizon 126 sesi.
 
-Keduanya dijalankan melalui satu file:
+Jalankan dengan:
 
 ```bash
+python3 scripts/financial_screener.py --timeframe daily_swing \
+  --period 10y --workers 8 --top 3 \
+  --output-dir output/screener/daily_latest
+
 python3 scripts/financial_screener.py --timeframe weekly_position \
   --period 10y --workers 8 --top 3 \
   --output-dir output/screener/weekly_latest
@@ -19,9 +24,16 @@ python3 scripts/financial_screener.py --timeframe monthly_long_term \
 
 Aturan final:
 
-- Formula hasil backtest tidak diubah saat konsolidasi.
-- Maksimal tiga rekomendasi; nol rekomendasi adalah hasil valid.
+- Maksimal tiga hasil; nol hasil adalah valid.
 - Weekly tidak mengisi slot kosong dengan kandidat `Wait for Trigger`.
-- Hasil lama di `output/` dipertahankan sebagai audit.
-- Daily tidak tersedia pada entrypoint final dan akan diriset kembali secara
-  terpisah.
+- Daily adalah watchlist D+10, bukan sinyal transaksi otomatis.
+- Daily menyediakan pilihan TP `3% / 5% / 10%` dan SL `2% / 5%` dari harga
+  entry aktual; user memilih sendiri kombinasinya.
+- Pilihan TP/SL tersebut adalah opsi risk management, bukan klaim bahwa aturan
+  eksekusinya sudah tervalidasi.
+- IHSG pada daily bersifat diagnostik dan tidak memblokir kandidat.
+- Eksperimen daily 2–5 sesi ditolak dan tidak masuk kode final.
+- Hasil lama di `output/` dipertahankan sebagai audit lokal.
+
+Detail formula, bukti backtest, keterbatasan data, dan command verifikasi ada di
+`README.md`.

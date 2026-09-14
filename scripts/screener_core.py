@@ -21,16 +21,16 @@ types = None
 
 IDX_BENCHMARK = "^JKSE"
 IDX_TZ = ZoneInfo("Asia/Jakarta")
-SCREENER_VERSION = "weekly-monthly-final"
+SCREENER_VERSION = "daily-d10-weekly-monthly-final"
 BACKTEST_HOLD_GRID = {
+    "daily_swing": [(10, 10)],
     "weekly_position": [(8, 40)],
     "monthly_long_term": [(6, 126)],
 }
 
 # Threshold ini adalah heuristic, BUKAN aturan resmi BEI maupun jaminan hasil.
-# daily_swing memakai confluence V2 yang wajib diuji/paper-trade. Penelitian V15
-# belum menemukan indikator daily tunggal yang stabil, jadi jangan membacanya
-# sebagai model yang telah tervalidasi untuk real-money trading.
+# daily_swing final adalah watchlist seleksi saham D+10. Ia menampilkan opsi
+# TP/SL yang dipilih user, bukan level eksekusi yang diklaim tervalidasi.
 #
 # TIMEFRAME = timeframe CANDLE (agregasi OHLC), BUKAN batas maksimal posisi ditahan.
 # Batas waktu posisi V1 (saran user, dalam satuan bar timeframe + konversi hari bursa):
@@ -43,7 +43,7 @@ TIMEFRAME_CONFIG = {
     "daily_swing": {
         "label": "daily_swing",
         "candle": "1d (harian)",
-        "deskripsi": "Candle harian; cocok untuk swing pendek.",
+        "deskripsi": "Watchlist candle harian dengan horizon maksimal 10 sesi.",
         "min_rows": 260,
         "rs_lookback": 60,
         "sr_window": 20,
@@ -52,18 +52,17 @@ TIMEFRAME_CONFIG = {
         "rsi_min": 52,
         "rsi_max": 70,
         "max_extension_ema9": 0.045,
-        "max_atr_pct": 0.07,
-        "min_atr_pct": 0.02,
+        "max_atr_pct": 0.04,
+        "min_atr_pct": 0.015,
         "breakout_vol_ratio": 1.50,
         "volume_confirm_ratio": 1.50,
         "min_adx": 20,
-        "default_min_turnover": 15_000_000_000,
+        "default_min_turnover": 10_000_000_000,
         "default_min_price": 200,
-        "ready_to_enter_score": 72,
-        "strong_buy_score": 72,  # alias lama, jangan dipakai baru
-        # Bracket eksekusi daily: risiko aktual dihitung dari entry dan stop
-        # struktural yang sudah dibulatkan ke fraksi harga BEI. Setup di luar
-        # rentang ini tidak boleh menjadi rekomendasi entry.
+        "ready_to_enter_score": 80,
+        "strong_buy_score": 80,  # alias lama, jangan dipakai baru
+        # Nilai berikut dipertahankan hanya untuk kompatibilitas core lama;
+        # entry/SL/TP daily dinonaktifkan oleh entrypoint final.
         "min_stop_pct": 0.02,
         "max_stop_pct": 0.05,
         "min_target_pct": 0.03,
@@ -1390,6 +1389,16 @@ def simpan_csv(
             "date": c["date"],
             "timeframe": normalize_timeframe(mode_tren) if mode_tren else "",
             "status": c["status"],
+            "selected_top3": c.get("selected_top3", False),
+            "recommendation_type": c.get("recommendation_type", ""),
+            "holding_horizon": c.get("holding_horizon", ""),
+            "confidence": c.get("confidence", ""),
+            "take_profit_options_pct": ",".join(
+                f"{value * 100:g}" for value in c.get("take_profit_options", ())
+            ),
+            "stop_loss_options_pct": ",".join(
+                f"{value * 100:g}" for value in c.get("stop_loss_options", ())
+            ),
             "quality_score": c["quality_score"],
             "rs_percentile": c["rs_percentile"],
             "rs_excess": c["rs_excess"],
@@ -1415,6 +1424,8 @@ def simpan_csv(
             "vol_ratio": c["vol_ratio"],
             "vol_z": c["vol_z"],
             "turnover20": c["turnover20"],
+            "avg_turnover20_prev": c.get("avg_turnover20_prev", np.nan),
+            "median_turnover20_prev": c.get("median_turnover20_prev", np.nan),
             "min_turnover": c.get("min_turnover", ""),
             "min_price": c.get("min_price", ""),
             "screener_version": SCREENER_VERSION,

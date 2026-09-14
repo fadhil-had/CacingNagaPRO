@@ -5,16 +5,19 @@ permissions:
 
 on:
   schedule:
-    # Friday 17:00 WIB, after the weekly candle has closed.
-    - cron: '0 10 * * 5'
+    # GitHub cron uses UTC. These are 18:00, 18:15, and 18:30 WIB.
+    - cron: '0 11 * * 1-5'  # Daily after each weekday market close.
+    - cron: '15 11 * * 5'   # Weekly after the Friday candle closes.
+    - cron: '30 11 1 * *'   # Monthly: day 1 reads the completed prior month.
   workflow_dispatch:
     inputs:
       timeframe:
         description: 'Final screener to run'
         required: true
-        default: 'weekly_position'
+        default: 'daily_swing'
         type: choice
         options:
+          - daily_swing
           - weekly_position
           - monthly_long_term
 
@@ -37,9 +40,35 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip check
 
+      - name: Verify final screener
+        run: |
+          pytest -q
+          python3 tests/backtest_engine.py --self-test
+
+      - name: Select scheduled timeframe
+        id: config
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_TIMEFRAME: ${{ inputs.timeframe }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            timeframe="$MANUAL_TIMEFRAME"
+          elif [ "$EVENT_SCHEDULE" = "0 11 * * 1-5" ]; then
+            timeframe="daily_swing"
+          elif [ "$EVENT_SCHEDULE" = "15 11 * * 5" ]; then
+            timeframe="weekly_position"
+          elif [ "$EVENT_SCHEDULE" = "30 11 1 * *" ]; then
+            timeframe="monthly_long_term"
+          else
+            echo "Unknown workflow trigger: $EVENT_NAME / $EVENT_SCHEDULE" >&2
+            exit 1
+          fi
+          echo "timeframe=$timeframe" >> "$GITHUB_OUTPUT"
+
       - name: Run final screener
         env:
-          SELECTED_TIMEFRAME: ${{ github.event.inputs.timeframe || 'weekly_position' }}
+          SELECTED_TIMEFRAME: ${{ steps.config.outputs.timeframe }}
         run: |
           python3 scripts/financial_screener.py \
             --timeframe "$SELECTED_TIMEFRAME" \
@@ -51,7 +80,7 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: screener-${{ github.event.inputs.timeframe || 'weekly_position' }}-${{ github.run_id }}
+          name: screener-${{ steps.config.outputs.timeframe }}-${{ github.run_id }}
           path: output/screener/
           if-no-files-found: error
           retention-days: 90
