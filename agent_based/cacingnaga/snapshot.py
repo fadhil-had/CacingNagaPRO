@@ -546,22 +546,43 @@ def build_snapshot(
     return snapshot
 
 
+def fact_evidence_refs(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Stable evidence id per populated field of a fact payload.
+
+    Mirrors ``Fact.evidence_id`` (``<Type>:<hash12>:<field>``) so ids built
+    from a payload dict match ids built from the fact object itself. Metadata
+    keys (``fact_type``/``fact_version``) are excluded: they are not evidence.
+    """
+    fact_type = payload.get("fact_type", payload.get("type", ""))
+    base = canonical_hash(payload)[:12]
+    return {
+        name: f"{fact_type}:{base}:{name}"
+        for name in payload
+        if name not in ("fact_type", "fact_version", "type")
+    }
+
+
 def snapshot_to_agent_envelope(snapshot: AnalysisSnapshot) -> dict[str, Any]:
-    """Compact agent input envelope (Phase 0 work item 4).
+    """Compact agent input envelope (Phase 0 work item 4, extended in Phase 3).
 
     The full audit payload stays in the snapshot; agents receive this subset
-    with stable evidence ids for every fact.
+    with a stable evidence id for *every* fact field (plan §7 Phase 3 item 4),
+    so prompts can require evidence citations that Python can verify.
     """
+    market_payload = snapshot.market.payload()
     return {
         "pipeline_version": snapshot.pipeline_version,
         "as_of": snapshot.as_of,
+        "snapshot_hash": snapshot.data_snapshot_hash,
         "market": {
-            "facts": snapshot.market.payload(),
+            "facts": market_payload,
             "evidence_id": snapshot.market.evidence_id("close"),
             "breadth_available": snapshot.market.breadth_available,
+            "evidence_refs": fact_evidence_refs(market_payload),
         },
         "candidates": [
             {
+                "ticker": facts.ticker,
                 "facts": facts.payload(),
                 "flow": flow.payload(),
                 "evidence_ids": {
@@ -570,6 +591,10 @@ def snapshot_to_agent_envelope(snapshot: AnalysisSnapshot) -> dict[str, Any]:
                     "rsi": facts.evidence_id("rsi"),
                     "relative_volume": facts.evidence_id("relative_volume"),
                 },
+                # Technical and flow facts share field names (relative_volume,
+                # ticker, as_of), so their refs stay in separate maps.
+                "evidence_refs": fact_evidence_refs(facts.payload()),
+                "flow_evidence_refs": fact_evidence_refs(flow.payload()),
             }
             for facts, flow in zip(snapshot.candidates, snapshot.flows)
         ],

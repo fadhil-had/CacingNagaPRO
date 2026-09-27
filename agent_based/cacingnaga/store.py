@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,13 +151,60 @@ class StoredRun:
     payload: dict[str, Any]
 
 
+class _SerialConnection:
+    """Proxy that serializes sqlite3 connection use across threads.
+
+    Used only when ``AuditStore(thread_safe=True)``: one shared connection is
+    guarded by a lock so handler threads (e.g. the Telegram service) can use
+    the store concurrently without ``check_same_thread`` errors or torn
+    transactions.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock) -> None:
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, *args: Any, **kwargs: Any):
+        with self._lock:
+            return self._conn.execute(*args, **kwargs)
+
+    def executescript(self, *args: Any, **kwargs: Any):
+        with self._lock:
+            return self._conn.executescript(*args, **kwargs)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
+    def backup(self, *args: Any, **kwargs: Any):
+        with self._lock:
+            return self._conn.backup(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
 class AuditStore:
     """Durable, idempotent run/audit store on SQLite (system of record)."""
 
-    def __init__(self, path: str | Path = "output/audit_store.sqlite3") -> None:
+    def __init__(self, path: str | Path = "output/audit_store.sqlite3", *,
+                 thread_safe: bool = False) -> None:
+        """Open the store.
+
+        ``thread_safe=True`` serializes access with a lock so one connection
+        can be shared across handler threads (the Telegram service does
+        this); the default keeps the historical single-thread behavior.
+        """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
+        conn = sqlite3.connect(str(self._path), check_same_thread=not thread_safe)
+        if thread_safe:
+            conn = _SerialConnection(conn, threading.Lock())
+        self._conn = conn
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
@@ -428,6 +476,10 @@ class AuditStore:
         raw_response: str | None = None,
         validated: dict[str, Any] | None = None,
         validation_ok: bool = True,
+        prompt_hash: str = "",
+        latency_ms: int = 0,
+        usage: dict[str, Any] | None = None,
+        validation_error: str = "",
     ) -> str:
         run = self.get_run(run_id)
         if run is None:
@@ -443,6 +495,10 @@ class AuditStore:
             "ticker": ticker,
             "schema_version": schema_version,
             "validation_ok": validation_ok,
+            "prompt_hash": prompt_hash,
+            "latency_ms": latency_ms,
+            "usage": dict(usage or {}),
+            "validation_error": validation_error,
             "recorded_at": now,
         }
         self._conn.execute(
@@ -471,6 +527,10 @@ class AuditStore:
                 "validated": json.loads(row["validated_json"]) if row["validated_json"] else None,
                 "raw_response": row["raw_response"],
                 "created_at": row["created_at"],
+                "prompt_hash": (json.loads(row["payload_json"]) or {}).get("prompt_hash", "") if row["payload_json"] else "",
+                "latency_ms": (json.loads(row["payload_json"]) or {}).get("latency_ms", 0) if row["payload_json"] else 0,
+                "usage": (json.loads(row["payload_json"]) or {}).get("usage", {}) if row["payload_json"] else {},
+                "validation_error": (json.loads(row["payload_json"]) or {}).get("validation_error", "") if row["payload_json"] else "",
             }
             for row in rows
         ]

@@ -22,7 +22,7 @@ Each decision below resolves one Section 4 item and names the code that owns it.
 | 13 | Unknown component scoring | Unavailable data ⇒ explicit `UNKNOWN` / `None` + availability flags; never silently neutral. Degenerate indicator windows have documented conventions (e.g. MFI=100 on zero-loss windows). **Phase 2:** `UnknownComponentPolicy` (conservative 0.0, recorded; or reject) — weights never renormalized. | `contracts.py` (facts), `snapshot.py`, `config.py` |
 | 14 | Catalyst source | No validated news source in v1 ⇒ catalyst stays `UNKNOWN`; no headline fabrication. **Phase 2:** catalyst weight (10%) scores 0.0 with an explicit audit note. | `contracts.py::CatalystInterpretation`, `policy.py` |
 | 15 | Candidate pool | Screener returns the full eligible pool; stable preliminary ordering (score desc, ticker asc); only then a configurable cap (`max_agent_pool_size`, default 30 ≥ 4). | `snapshot.py::build_snapshot` |
-| 16 | Hermes runtime | **Not yet confirmed** — no package guessed. Phase 3 implements a provider-neutral `AgentTransport`; these phases are Hermes-free by design. | deferred (Phase 3 / WP-07) |
+| 16 | Hermes runtime | **Not yet confirmed** — no package guessed. **Phase 3 done:** provider-neutral `AgentTransport` (`transport.py`) + deterministic `FakeTransport`; Market/Technical/Flow agents run entirely over the fake transport with no SDK import anywhere. The real Hermes adapter plugs into the same protocol in Phase 4 without touching the agents. | `transport.py`, `agents/` |
 | 17 | Orchestration ownership | Python owns run lifecycle/validation; agent-call orchestration arrives with the confirmed Hermes runtime (Phase 4). | `snapshot.py` (lifecycle-lite for now) |
 | 18 | Scheduler | Deferred to Phase 8. Snapshots are schedulable via `as_of` replay. | deferred |
 | 19 | Persistence | **Phase 2A done:** SQLite is the system of record (`store.py`); versioned schema via `PRAGMA user_version`, WAL, FK on; runs idempotent by `hash(pipeline, date, snapshot_hash, config_hash)`; snapshot payload + hash persisted *before* any agent call and verified recomputable from the DB; state machine `RUNNING → COMPLETE/PARTIAL/FAILED` enforced in code and CHECK constraints; JSON/CSV/Markdown exporters stay legacy-compatible. Durable volume/deployment choice deferred to Phase 8. | `store.py`, `exporters.py` |
@@ -43,6 +43,68 @@ Each decision below resolves one Section 4 item and names the code that owns it.
 - Evidence floors: flow/market components score 0.0 + audit note when their
   facts are unavailable; catalyst is 0.0 in v1 (no source). Nothing is
   silently treated as evidence-backed neutral.
+
+## Phase 3 additions (2026-09-27)
+
+- **Agent boundary (plan §7 Phase 3)**: agents receive only the minimal
+  envelope slice (market-only for Market; facts-only / flow-only per
+  candidate), must cite evidence ids that exist in that slice, and are
+  rejected for injected `FORBIDDEN_AGENT_FIELDS`, ticker mutation,
+  fabricated evidence ids (in prose or refs), or citation-free claims.
+- **`UNKNOWN` ≠ neutral at the agent layer too**: Flow defaults to
+  `UNKNOWN`/`UNKNOWN`, `UNKNOWN` flow can never carry `HIGH` confidence
+  (contract), and assertive bandar/foreign/broker certainty claims are
+  rejected while disclaimers are allowed.
+- **Bounded turns** (`TransportConfig`): timeout budget, 1–5 attempts, backoff;
+  exhaustion ⇒ `FAILED` (or `PARTIAL` when the budget ran out first) with the
+  redacted error persisted — never a fabricated recommendation.
+- **Failure isolation**: per-candidate failure ⇒ `PARTIAL`; Market failure ⇒
+  `FAILED` (market is mandatory for every downstream decision).
+- **Prompt/response audit**: prompt hash, redacted raw response, validated
+  payload, latency, and usage metadata persist per turn via
+  `AuditStore.save_agent_output`.
+
+## Phase 4 additions (2026-09-27)
+
+- **Decision ownership (plan §7 Phase 4 item 6)**: the Decision Agent
+  proposes one of READY/WAIT/REJECT over a fixed evidence packet;
+  `agent_proposed_status` is recorded verbatim. Python derives
+  `final_status` via the merge: conflict effects first, upgrade veto
+  (favorability floor = Python's derivation), justified downgrades accepted
+  (reason required), failed-turn floor keeps Python's status.
+- **Conflict rules are versioned code** (`CONFLICT_RULES_1`,
+  `conflicts.py`): HARD_INVALIDATION blocks READY, MATERIAL_CONFLICT caps at
+  WAIT (the Phase 6 challenge trigger), MINOR_CAUTION is surface-only.
+  Same inputs ⇒ same conflicts, so triggers are reproducible and replayable.
+- **Hermes-outage policy (§4 item 10)**: any Decision Agent failure degrades
+  the run to `PARTIAL`/`NOT_EVALUATED` — never `NO_TRADE`, never a local
+  improvised recommendation. Analyst-phase failures keep the Phase 3 rules
+  (candidate failure ⇒ PARTIAL, market failure ⇒ FAILED).
+- **Replay contract**: a terminal run re-triggered with the same
+  snapshot/config replays from the stored synthesis with zero transport
+  calls and reproduces an identical run result, decision records, and
+  conflicts (tested, including the tuple/list JSON round-trip).
+
+## Phase 5 additions (2026-09-27)
+
+- **Telegram is a render/adapter, never a decision path (plan §7 Phase 5)**:
+  the bot core is a pure dispatcher over the audit store; all five MVP
+  commands render the canonical stored result. `/why` never re-runs an LLM
+  and never parses messages; rendering cannot mutate decisions (tested).
+- **Authorization on every command**: sender AND chat allowlists; unauthorized
+  callers receive a rejection without data.
+- **`/screen` single-flight + idempotency**: overlapping triggers get an
+  in-progress notice; actual screening always goes through
+  `AnalysisService`'s idempotency key, so concurrent Telegram/CLI/scheduler
+  triggers converge on one stored run.
+- **Operational enablement gated (item 11)**: exposure is off until
+  `CACINGNAGA_TELEGRAM_ENABLED=1` AND the Phase 6 challenge contract passes;
+  enabling additionally requires a bot token and a non-empty allowlist.
+  Deploy as a separate long-lived service; never inside the scheduled job.
+- **Package naming**: `telegram_layer` (importing as `telegram` would shadow
+  `python-telegram-bot` itself).
+- **Store threading**: `AuditStore(thread_safe=True)` serializes one SQLite
+  connection for handler threads; default behavior unchanged.
 
 ## Frozen legacy baseline
 

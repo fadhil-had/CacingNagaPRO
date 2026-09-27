@@ -494,6 +494,47 @@ class CatalystInterpretation(_InterpretationPayload):
         return _from_payload(cls, payload)
 
 
+@dataclass(frozen=True)
+class DecisionInterpretation(_InterpretationPayload):
+    """Decision Agent output (Phase 4, plan §7 item 5/6).
+
+    The Decision Agent proposes; Python disposes: ``proposed_status`` is one of
+    the candidate statuses and is *recorded* as ``agent_proposed_status`` while
+    Python derives ``final_status`` from immutable facts, hard gates, and the
+    conflict rules. A proposal to change Python's derived status must explain
+    itself (``status_change_reason``) and cite evidence.
+    """
+
+    ticker: str = ""
+    proposed_status: str = "WAIT"
+    confidence_band: str = "LOW"
+    status_change_reason: str = ""      # required when downgrading Python's status
+    reasons: tuple[str, ...] = ()
+    concerns: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+    def validate(self) -> None:
+        _require(bool(self.ticker), "DecisionInterpretation.ticker is required")
+        _validate_enum(self.proposed_status, CANDIDATE_STATUSES, "DecisionInterpretation.proposed_status")
+        _validate_band(self.confidence_band, "DecisionInterpretation.confidence_band")
+        _validate_reason_list(list(self.reasons), "reasons")
+        _validate_reason_list(list(self.concerns), "concerns")
+        _require(
+            all(isinstance(r, str) and r for r in self.evidence_refs)
+            and len(self.evidence_refs) >= 1,
+            "DecisionInterpretation must cite at least one evidence ref",
+        )
+        for field_name in self.__dict__:
+            _require(
+                field_name not in FORBIDDEN_AGENT_FIELDS,
+                f"forbidden agent field: {field_name}",
+            )
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "DecisionInterpretation":
+        return _from_payload(cls, payload)
+
+
 # ===========================================================================
 # Layer 3 — Python-owned final decisions and run result
 # ===========================================================================
