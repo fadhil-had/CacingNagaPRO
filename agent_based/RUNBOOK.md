@@ -11,10 +11,27 @@ the rollback target is the frozen legacy screener.
 
 ## 1. Daily schedule model
 
+Operate through the deployment entrypoint (repository root):
+
+```bash
+python3 scripts/ai_team.py run       # scheduled post-market job
+python3 scripts/ai_team.py health    # five-surface ops report
+python3 scripts/ai_team.py screen    # manual shadow run
+python3 scripts/ai_team.py telegram  # gated bot service
+```
+
+Exit codes: `0` = ran / replayed / safe skip; `1` = configuration or
+contract failure; `2` = degraded run (PARTIAL/FAILED) — page the on-call
+owner for that stage. Configuration lives in `config/ai_team.toml`
+(validated at startup; secrets stay in environment variables).
+Shadow runs are tagged `CACINGNAGA_SMOKE_V1` in the audit trail — never
+mistake them for live-provider output.
+
 - One run per IDX trading day, only after the close gate passes
   (16:00 WIB + `earliest_run_after_close_minutes`).
 - Weekends and IDX holidays are `SKIP_NON_TRADING_DAY` (calendar in
-  `scheduler.IDXCalendar`; extra closures go in `extra_holidays`).
+  `scheduler.IDXCalendar`; extra closures go in `extra_holidays`
+  inside `config/ai_team.toml`).
 - The scheduler never auto-backfills: a trading-day gap raises
   `SKIP_MISSED_RUNS` and pages the owner; the operator decides.
 - Duplicate triggers are safe: the idempotency key dedups and replays with

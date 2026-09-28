@@ -285,7 +285,10 @@ class CachedBreakerTransport:
                 self._cache[key] = response
             return response
         self._breaker.record_failure()
-        assert last_error is not None
+        if last_error is None:  # unreachable without max_attempts >= 1
+            raise ContractViolation(
+                "retry loop exhausted without recording an error"
+            )
         raise last_error
 
 

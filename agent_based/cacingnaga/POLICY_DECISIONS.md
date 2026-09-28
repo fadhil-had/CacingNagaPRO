@@ -253,6 +253,34 @@ Each decision below resolves one Section 4 item and names the code that owns it.
   returns daily operation to the frozen legacy screener with no data
   loss — AI runs remain in the audit store for later evaluation.
 
+## Deployment layer additions (2026-09-28)
+
+- **Shadow transport, not a guessed runtime (decision #16 upheld)**: the
+  Hermes runtime remains unconfirmed, so the deployment entrypoint
+  (`scripts/ai_team.py`) runs on `CacingNagaSmokeTransport` — a
+  deterministic transport that echoes Python facts with conservative
+  enums/LOW confidence and never invents numbers, news, or flow claims.
+  Every record it produces is tagged `CACINGNAGA_SMOKE_V1` in
+  `agent_outputs.usage`, so a shadow run can never be mistaken for a
+  live-provider run in the audit trail. The smoke transport still passes
+  the full validation pipeline (forbidden fields, enums, evidence
+  citations), proving the boundary rather than bypassing it.
+- **No new data path**: `deployment.load_live_snapshot` downloads through
+  the frozen-legacy loaders only (`download_ihsg`,
+  `download_saham_batch`, the universe Excel). Freshness behavior, symbol
+  normalization, and the adjusted price basis stay identical to the
+  benchmark screener; the deployment layer never fetches on its own.
+- **Configuration is externalized and startup-gated (plan §10)**:
+  `config/ai_team.toml` carries only non-secret settings, version-pinned
+  (`DEPLOYMENT_CONFIG_1`); a version mismatch, bad TOML, invalid universe,
+  or shared secret values fails closed before anything runs. Secrets
+  remain environment-only; the config stores env-var *names*.
+- **Entrypoint exit codes are part of the contract**: `0` = ran, replayed,
+  or a documented safe skip; `1` = configuration/contract failure (nothing
+  started); `2` = degraded run (PARTIAL/FAILED) — page per RUNBOOK §2.
+  A due session with unusable market data fails closed; it never fakes a
+  run or improvises a snapshot.
+
 ## Frozen legacy baseline
 
 `tests/` (12 tests) pins the legacy screener/backtest behavior. Phase 0 exit

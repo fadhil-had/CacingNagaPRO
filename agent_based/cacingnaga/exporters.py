@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import RunResult
-from .errors import ContractViolation
 
 _DECISION_COLUMNS = (
     "ticker", "final_status", "agent_proposed_status", "confidence_band",

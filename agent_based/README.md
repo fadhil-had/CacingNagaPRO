@@ -7,13 +7,15 @@ Safety Harness**, **Phase 1 — Data, Indicators, and Screener Foundation**,
 Snapshot and Audit Store**, **Phase 2B — Offline Policy Backtest**,
 **Phase 3 — Agent Contracts and Individual Analysts**,
 **Phase 4 — Decision, Conflict Handling, and Orchestration**,
-**Phase 7 — Evaluation**, and **Phase 8 — Scheduling, Operations, and
-Rollout** delivered: a post-market IDX session scheduler over the shared
-idempotency/persistence path, market-close/holiday/stale-data gating,
-missed-run detection with explicit manual backfill, a circuit breaker with
-safe request-keyed caching, secret-free structured metrics and health
-checks with alert thresholds and owners, separated secret domains, and the
-recovery/rollback runbook. 246 tests green (+12 frozen legacy).
+**Phase 7 — Evaluation**, **Phase 8 — Scheduling, Operations, and
+Rollout**, and the **deployment layer** delivered: a post-market IDX
+session scheduler over the shared idempotency/persistence path,
+market-close/holiday/stale-data gating, missed-run detection with explicit
+manual backfill, a circuit breaker with safe request-keyed caching,
+secret-free structured metrics and health checks with alert thresholds and
+owners, separated secret domains, the recovery/rollback runbook, and the
+production entrypoint (`scripts/ai_team.py`) wired to externalized
+`config/ai_team.toml`. 266 tests green (+12 frozen legacy).
 
 **Phase 6 — Challenge/Debate** delivered: versioned deterministic triggers
 (`CHALLENGE_RULES_1`), bounded focused debates, Python-owned status effects
@@ -33,6 +35,7 @@ agent_based/
 ├── orchestrator.py        # Phase 4 AnalysisService (lifecycle → synthesis → replay)
 ├── scheduler.py           # Phase 8 post-market scheduler (gates, missed runs, backfill)
 ├── ops.py                 # Phase 8 ops: circuit breaker, metrics, health, secret separation
+├── deployment.py          # Deployment layer: TOML config, live snapshot, shadow transport
 ├── RUNBOOK.md             # Phase 8 recovery/rollback runbook with completed drill
 ├── agents/                # Phase 3/4 analyst agents (fake transport; Hermes later)
 │   ├── base.py            # prompts, validation pipeline, bounded retries, redaction
@@ -168,10 +171,35 @@ for rec in result.decision_records:
 # Re-triggering the same snapshot/config replays from the store — zero calls.
 ```
 
+## Deployment
+
+Deployment guide: **`agent_based/DEPLOY.md`** — prerequisites, config,
+secrets, wiring verification, cron/GH-Actions scheduling, monitoring,
+Telegram enablement, real-transport swap, rollback, and backups. Quick
+reference:
+
+```bash
+python3 scripts/ai_team.py run       # scheduled post-market job (all gates)
+python3 scripts/ai_team.py screen    # one manual shadow run (no scheduler gates)
+python3 scripts/ai_team.py health    # secret-free ops report
+python3 scripts/ai_team.py telegram  # long-lived bot service (feature-flag gated)
+```
+
+Live data flows only through the frozen-legacy loaders
+(`download_ihsg` / `download_saham_batch` / the universe Excel file) into
+`build_snapshot` — the deployment layer adds no new data path. The Hermes
+runtime remains unconfirmed (decision #16), so runs execute on
+`CacingNagaSmokeTransport`: a deterministic shadow transport whose every
+audit record is tagged `CACINGNAGA_SMOKE_V1` and whose interpretations echo
+Python facts (never inventing numbers, news, or flow claims). A real
+transport drops in later without touching the entrypoint. Exit codes:
+0 = ran/replayed/safe skip, 1 = configuration/contract failure,
+2 = degraded run (PARTIAL/FAILED → page per RUNBOOK.md).
+
 ## Tests
 
 ```bash
-python3 -m pytest agent_based/cacingnaga/tests/ -q   # 246 tests (Phase 0 → 8)
+python3 -m pytest agent_based/cacingnaga/tests/ -q   # 266 tests (Phase 0 → 8 + deployment)
 python3 -m pytest tests/ -q                          # 12 legacy tests (frozen baseline)
 ```
 

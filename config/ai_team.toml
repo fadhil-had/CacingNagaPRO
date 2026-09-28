@@ -1,0 +1,60 @@
+# CacingNagaPRO AI Analyst Team — deployment configuration (plan §10).
+#
+# Strategy and integration settings live here, never in prompts. The loader
+# (agent_based/deployment.py: load_deployment_config) validates at startup
+# and every value lands in the run's audit metadata via the service config
+# payload. Secrets are NOT here: tokens stay in environment variables
+# (plan §11) — only their env-var *names* are configured below.
+
+[meta]
+# Any schema change that breaks this file must bump DEPLOYMENT_CONFIG_VERSION
+# and update the loader; mismatched files are refused at startup.
+version = "DEPLOYMENT_CONFIG_1"
+
+[screener]
+# Deterministic pre-agent screening thresholds (AIAnalystConfig.screener).
+min_turnover_idr = 1_000_000_000.0
+min_price_idr = 100.0
+max_atr_pct = 0.04
+min_history_bars = 260
+
+[policy]
+max_agent_pool_size = 30
+
+[scheduler]
+# Post-market window in Asia/Jakarta (IDX close 16:00 WIB).
+close_hour = 16
+close_minute = 0
+earliest_run_after_close_minutes = 0
+look_back_days = 5
+# Additional IDX non-trading days for this deployment (ISO dates), e.g.
+# decree closures announced after the built-in calendar was frozen.
+extra_holidays = [
+  # "2026-12-31",
+]
+
+[scheduler.universe]
+# Universe source for live runs. `excel` reads resource/daftar-saham.xlsx
+# through the frozen-legacy loader; `fixed` uses `tickers` below.
+source = "excel"
+excel_path = "resource/daftar-saham.xlsx"
+period = "2y"                      # >= 260 daily bars for the screener
+# tickers = ["BBCA.JK", "BBRI.JK", "TLKM.JK"]
+
+[ops]
+# Circuit breaker (hermes stage) and cache bounds.
+failure_threshold = 3
+cooldown_seconds = 60.0
+half_open_probes = 1
+
+[telegram]
+# Operational exposure stays feature-flagged off by default (Phase 5 item 11).
+enabled = false
+# Secret *names* only — the values must live in the environment.
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+allowed_user_ids = []
+allowed_chat_ids = []
+store_path = "output/audit_store.sqlite3"
+
+[storage]
+store_path = "output/audit_store.sqlite3"
