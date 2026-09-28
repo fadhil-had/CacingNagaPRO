@@ -152,7 +152,8 @@ def decision_handler_factory(proposals=None, with_reason=True):
 
 
 def full_transport(env, *, market_regime="BULLISH", decision_proposals=None,
-                   dead_decision_for=(), dead_flow_for=()):
+                   dead_decision_for=(), dead_flow_for=(),
+                   flow_challenge_stance="SUPPORT"):
     handlers = {"MarketAgent": market_handler_factory(env, market_regime)}
     for c in env["candidates"]:
         ticker = c["facts"]["ticker"]
@@ -172,7 +173,153 @@ def full_transport(env, *, market_regime="BULLISH", decision_proposals=None,
             def dead_flow(request, _t=ticker):
                 raise RuntimeError(f"flow provider down for {_t}")
             handlers[f"FlowAgent:{ticker}"] = dead_flow
+
+        # Phase 6 debate turns: ChallengeAgent per challenged agent + the
+        # DecisionAgent resolution turn, both shape-dispatched.
+        handlers[f"ChallengeAgent:{ticker}"] = challenge_handler_factory(
+            c, flow_stance=flow_challenge_stance
+        )
+        handlers[f"DecisionAgentResolution:{ticker}"] = resolution_handler_factory(c)
     return FakeTransport(handlers)
+
+
+def _first_evidence_id(value):
+    """First evidence-id-shaped string anywhere in a payload (citations)."""
+    import re as _re
+
+    pattern = _re.compile(r"[A-Za-z]+Facts:[0-9a-f]{12}:[a-zA-Z0-9_]+")
+    if isinstance(value, str):
+        m = pattern.search(value)
+        return m.group(0) if m else None
+    if isinstance(value, dict):
+        for item in value.values():
+            found = _first_evidence_id(item)
+            if found:
+                return found
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _first_evidence_id(item)
+            if found:
+                return found
+    return None
+
+
+def challenge_handler_factory(candidate, flow_stance="SUPPORT"):
+    """Focused-response handler for debate turns.
+
+    The turn envelope carries agent_name/conflict_rule_id on the turn itself;
+    technical slices have ema20 evidence, flow slices have MFI/CMF, and the
+    market handler answers the R3 turn from market evidence. ``flow_stance``
+    parameterizes the FlowAgent's answer for resolution-lift tests.
+    """
+    refs = candidate.get("evidence_refs", {})
+    flow_refs = candidate.get("flow_evidence_refs", refs)
+    has_ema = "ema20" in refs
+    mfi_ref = flow_refs.get("mfi") or refs.get("mfi", "")
+    ema_ref = refs.get("ema20", "")
+
+    def handler(request):
+        turn = request.envelope
+        agent = turn["agent_name"]
+        rule = turn["conflict_rule_id"]
+        if agent == "TechnicalAgent":
+            if has_ema:
+                return {
+                    "agent_name": agent,
+                    "ticker": request.ticker,
+                    "conflict_rule_id": rule,
+                    "stance": "SUPPORT",
+                    "missing_data": [],
+                    "reasons": ["structure stands per " + ema_ref],
+                    "evidence_refs": [ema_ref],
+                }
+            return {
+                "agent_name": agent,
+                "ticker": request.ticker,
+                "conflict_rule_id": rule,
+                "stance": "WITHDRAW",
+                "missing_data": ["core structure facts"],
+                "reasons": ["reading withdrawn; evidence unavailable"],
+                "evidence_refs": [],
+            }
+        if agent == "FlowAgent":
+            if flow_stance == "SUPPORT" and mfi_ref:
+                return {
+                    "agent_name": agent,
+                    "ticker": request.ticker,
+                    "conflict_rule_id": rule,
+                    "stance": "SUPPORT",
+                    "missing_data": [],
+                    "reasons": ["distribution stands per " + mfi_ref],
+                    "evidence_refs": [mfi_ref],
+                }
+            return {
+                "agent_name": agent,
+                "ticker": request.ticker,
+                "conflict_rule_id": rule,
+                "stance": flow_stance,
+                "missing_data": [] if flow_stance != "SUPPORT" else ["directional flow data"],
+                "reasons": [
+                    f"reading {flow_stance.lower()}d after review per "
+                    + (mfi_ref or "unavailable evidence")
+                ],
+                "evidence_refs": [mfi_ref] if mfi_ref else [],
+            }
+        # MarketAgent turn (R3-style): cite the first id inside its own
+        # reading when the market payload carries one.
+        own = turn.get("own_reading", {})
+        market_ref = _first_evidence_id(own)
+        return {
+            "agent_name": agent,
+            "ticker": request.ticker,
+            "conflict_rule_id": rule,
+            "stance": "SUPPORT",
+            "missing_data": ["breadth unavailable"],
+            "reasons": [
+                ("regime read stands per " + market_ref) if market_ref
+                else "regime read stands; breadth unavailable"
+            ],
+            "evidence_refs": [market_ref] if market_ref else [],
+        }
+
+    return handler
+
+
+def resolution_handler_factory(candidate):
+    """DecisionAgent resolution turn: classify the debate honestly.
+
+    Default stance is SUPPORT from both sides, so the honest classification
+    is CONFIRMED (the conflict stands). A WITHDRAW stance classifies REVISED.
+    The proposed effect mirrors the preconfigured policy; Python recomputes
+    it authoritatively anyway. Citations prefer the conflict's evidence ids,
+    falling back to ids that appeared in the turn records.
+    """
+    def handler(request):
+        conflict = request.envelope["conflict"]
+        turns = request.envelope["agent_turns"]
+        revised = any(
+            t.get("stance") in ("REVISE", "WITHDRAW") for t in turns
+        )
+        unavailable = any(t.get("stance") == "UNAVAILABLE" for t in turns)
+        kind = "REVISED" if revised else ("UNRESOLVED" if unavailable else "CONFIRMED")
+        effect = "CAP_AT_WAIT" if kind != "REVISED" else "NONE"
+        ref = (
+            (conflict["evidence_refs"][-1] if conflict["evidence_refs"] else None)
+            or _first_evidence_id(turns)
+        )
+        return {
+            "ticker": request.ticker,
+            "conflict_rule_id": conflict["rule_id"],
+            "resolution": kind,
+            "status_effect": effect,
+            "summary": f"debate classified {kind} for {conflict['ticker']}",
+            "reasons": [
+                ("turns reviewed per " + ref) if ref else "turn records reviewed",
+            ],
+            "evidence_refs": [ref] if ref else [],
+        }
+
+    return handler
 
 
 @pytest.fixture(scope="module")

@@ -106,6 +106,153 @@ Each decision below resolves one Section 4 item and names the code that owns it.
 - **Store threading**: `AuditStore(thread_safe=True)` serializes one SQLite
   connection for handler threads; default behavior unchanged.
 
+## Phase 6 additions (2026-09-27)
+
+- **Challenge trigger is versioned and deterministic (plan §7 Phase 6
+  item 1)**: `CHALLENGE_RULES_1` — debates fire only from known conflict
+  rule ids (R1–R4) with MATERIAL/HARD severity. Benign low-confidence
+  differences produce no `Conflict` and can never trigger. An explicit
+  `/debate TICKER` additionally debates that ticker's MINOR-caution
+  conflicts; it cannot invent a debate where no conflict was detected.
+- **Claim boundary (items 2–4)**: challenged agents answer a focused
+  question with SUPPORT/REVISE/WITHDRAW over their own validated reading,
+  strict `ChallengeResponse` schema (evidence citations required, missing
+  data acknowledged, forbidden fields rejected). No new prices, scores, or
+  tickers can enter the debate.
+- **The Decision Agent classifies; Python disposes (items 5, 7)**:
+  `python_status_effect` recomputes the effect from the classification AND
+  the recorded stances — a claimed REVISED without an actual
+  revise/withdraw stance is UNRESOLVED. Effect vocabulary is
+  NONE / CAP_AT_WAIT / BLOCK_READY; READY is structurally unreachable. A
+  failed resolution turn serializes as the canonical UNRESOLVED stub.
+- **Lift semantics**: a genuinely resolved material conflict lifts the
+  Phase 4 WAIT cap only up to Python's own gate verdict (hard gates keep
+  their floor) — a debate can resolve a disagreement, never override a
+  gate.
+- **Bounded debates (item 9)**: one round, `CHALLENGE_MAX_TURNS=2` attempts
+  per agent; a failed debate ends CONSERVATIVE (UNRESOLVED + preconfigured
+  effect) and never fails the run — the run completes with the conflict
+  standing.
+- **Resolution-turn identity**: the Decision Agent's resolution turn
+  requests under `DecisionAgentResolution` so transports/tests route it
+  independently of Phase 4 proposals, but persists under the Decision
+  Agent name (one agent, two turn types).
+- **Persistence (item 6)**: complete `ChallengeRecord` (rule versions,
+  packet, per-turn views, raw rows via `save_agent_output`, resolution,
+  Python effect, deterministic `CH-…` id) in the `challenges` table;
+  `CandidateDecision.challenge_ref` and the `decisions` rows reference it;
+  replays rebuild records with zero transport calls.
+- **Telegram (item 8)**: `/debate TICKER` shows the concise stored debate
+  when one exists (explicit no-debate message otherwise); `/why` surfaces
+  the debate reference. Both read the store only.
+- **Gate status**: the Phase 6 challenge contract now passes (192 pipeline
+  tests green, 2026-09-27). The remaining operational gate is the operator
+  flag `CACINGNAGA_TELEGRAM_ENABLED=1` plus token/allowlist, per Phase 5.
+
+## Phase 7 additions (2026-09-27)
+
+- **Accepted status is configuration, not code (item 1)**:
+  `BacktestConfig.accepted_status` ∈ {READY, WAIT}; REJECT is refused
+  (diagnostic only). Status semantics stay distinct (items 5–6): WAIT rows
+  carry `NOT_TAKEN` plus a separately labeled trigger counterfactual filled
+  at the plan's entry-zone floor; unfilled entry-zone recommendations stay
+  `NOT_EXECUTED`; REJECT returns never enter performance metrics.
+- **Trade records are outcome-complete (items 3, 4, 7)**: fill date/price,
+  TP1/TP2/SL hit dates, `actual_result` ∈ {WIN, LOSS, FLAT}, gross and
+  cost-adjusted returns, holding sessions, per-position IHSG benchmark;
+  MFE/MAE measured from the actual entry fill over the same evaluation
+  window. Execution rules remain the frozen EXECUTION_POLICY v1 set —
+  unchanged when the accepted status changes.
+- **Every signal carries its provenance (item 2)**: `SIGNAL_RECORD_1` pins
+  policy version, consulted agents, challenge reference, prompt hash,
+  model reference, config hash, and the trade row — so ablations and
+  metrics reproduce from stored recommendations over aligned dates/costs
+  (exit criterion 3).
+- **Ablations are date-matched, pool-matched, and weight-only (item 9)**:
+  five arms (`no_ai`, `technical_only`, `technical_flow`,
+  `technical_flow_market`, `full_decision`) run the same point-in-time
+  snapshots on the same dates; only `ScoreWeights` differ per arm
+  (renormalized to sum 1.0) — gates, risk plans, and costs are identical,
+  so agent value is isolated by matched counterfactuals, not final P&L.
+- **Baselines are deterministic (item 11)**: IHSG horizon, fee-free
+  buy-and-hold, seeded random eligible picks (seed pinned at 42), the
+  frozen legacy screener run point-in-time through the read-only adapter
+  (never mutating `scripts/`), and the deterministic policy replay.
+- **Drawdown is an evaluation construct (item 10)**: maximum drawdown on a
+  documented equal-weight basket of executed trades (chronological equity
+  of net returns). Explicitly not production position sizing or portfolio
+  management.
+- **Promotion criteria frozen before selection (item 12)**:
+  `EvalCriteria` pins minimum sample (30 executed trades), horizon (10
+  sessions), costs (fee 0.2% / slippage 0.1% per side), and the promotion
+  rule (full_decision must beat the current screener by ≥ 0.5 points on
+  `average_net_return_pct`). Frozen criteria are immutable; unknown
+  metrics and under-sampled arms never promote; an unfrozen criteria
+  object refuses to promote at all.
+- **Catalysts stay forward-paper (item 13)**: no archived point-in-time
+  news source with publication/retrieval provenance exists, so the
+  catalyst component remains UNKNOWN (scored 0) and catalysts are excluded
+  from historical claims.
+- **One reproducible entry point (item 14)**: `run_evaluation` emits
+  `EVALUATION_REPORT_1` (byte-identical for identical inputs) containing
+  status rates, WAIT confirmation, losses avoided by REJECT, basket
+  drawdown, all ablation arms, all baselines, the promotion decision, and
+  the historical-results disclaimer. No AI improvement is claimed on
+  synthetic fixture data.
+
+## Phase 8 additions (2026-09-28)
+
+- **The scheduler adds zero new state semantics (items 1–2)**:
+  `agent_based/scheduler.py` is a deterministic gate in front of the
+  existing `AnalysisService` path. It decides *whether* and *with which
+  run id* a run starts; idempotency, lifecycle transitions, and
+  persistence remain the store's alone. Safe states are explicit and
+  skippable: `SKIP_NON_TRADING_DAY`, `DEFERRED` (market close gate),
+  `SKIP_ALREADY_RUN` (replay, zero agent calls), `SKIP_MISSED_RUNS`
+  (never auto-catch-up), `SKIP_STALE_DATA` (auditable FAILED row, no
+  agent call).
+- **One timezone, one calendar (item 2)**: `IDX_TZ` is imported from the
+  frozen legacy screener through the compatibility adapter — the new
+  pipeline cannot compute a different WIB wall clock than the benchmark.
+  The IDX holiday calendar (`IDX_HOLIDAYS_2025_2026`) is explicit,
+  versioned data, extendable per deployment via `extra_holidays`
+  (unexpected decree closures) without touching the frozen set.
+- **PARTIAL/FAILED sessions count as executed**: the missed-run detector
+  treats any terminal run as covering its session. A degraded run must
+  not cause unbounded automatic catch-up; recovery from degraded runs is
+  a runbook action, not a scheduler reflex.
+- **Backfill is manual, explicit, and hash-checked (item 7)**:
+  `run_backfill(date, source)` requires a snapshot built for that exact
+  `as_of` from historical frames and refuses any snapshot whose `as_of`
+  does not match (never silently reuse current data for a historical
+  date). The scheduler hands the exact snapshot to the service factory so
+  a backfill never borrows another run's transport bindings.
+- **Circuit breaker reopens on a failed probe (item 3)**: OPEN → (cooldown)
+  → HALF_OPEN admits a bounded probe budget; a failed probe re-opens with
+  a fresh cooldown, a success closes. The breaker wraps the provider
+  transport only — validation, policy, and status effects stay in Python
+  beneath it. The response cache is request-keyed (canonical request
+  hash) and process-local, so replays stay deterministic; it never
+  bypasses validation.
+- **Metrics never carry secrets (item 4)**: `stage_metrics` redacts any
+  field whose name contains token/secret/password/key/api_key. Every
+  stage has a named owner (`STAGE_OWNERS`) and threshold
+  (`ALERT_THRESHOLDS`); alerts identify the failed stage only — never a
+  credential.
+- **Secret separation fails closed (item 5)**: three domains, three
+  environment variables (`TELEGRAM_BOT_TOKEN`, `HERMES_API_TOKEN`,
+  `LEGACY_GEMINI_API_KEY`). A value shared between two domains is a
+  configuration error (a leaked token must not silently authenticate the
+  wrong subsystem).
+- **Compatibility is re-verified per run (item 6)**: the scheduler checks
+  `pipeline_version == PIPELINE_VERSION` and validates both the config
+  and the scheduler config before accepting any run.
+- **Rollout keeps the legacy job (item 9)**: `financial_screener.yml` is
+  untouched; the new `ai_team_tests.yml` workflow only runs the package
+  tests. Rollback (runbook §2.6) disables the AI trigger and the bot and
+  returns daily operation to the frozen legacy screener with no data
+  loss — AI runs remain in the audit store for later evaluation.
+
 ## Frozen legacy baseline
 
 `tests/` (12 tests) pins the legacy screener/backtest behavior. Phase 0 exit

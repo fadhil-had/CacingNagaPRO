@@ -1,4 +1,4 @@
-# agent_based/ — CacingNagaPRO AI Analyst Team (Phase 0 → 5)
+# agent_based/ — CacingNagaPRO AI Analyst Team (Phase 0 → 8)
 
 Implementation of `Backlog/improvement_v3.md` (PRD) and
 `Backlog/improvement_v3_implementation_plan.md`: **Phase 0 — Specification and
@@ -6,7 +6,20 @@ Safety Harness**, **Phase 1 — Data, Indicators, and Screener Foundation**,
 **Phase 2 — Deterministic Risk and Ranking Layer**, **Phase 2A — Durable
 Snapshot and Audit Store**, **Phase 2B — Offline Policy Backtest**,
 **Phase 3 — Agent Contracts and Individual Analysts**,
-**Phase 4 — Decision, Conflict Handling, and Orchestration**, and
+**Phase 4 — Decision, Conflict Handling, and Orchestration**,
+**Phase 7 — Evaluation**, and **Phase 8 — Scheduling, Operations, and
+Rollout** delivered: a post-market IDX session scheduler over the shared
+idempotency/persistence path, market-close/holiday/stale-data gating,
+missed-run detection with explicit manual backfill, a circuit breaker with
+safe request-keyed caching, secret-free structured metrics and health
+checks with alert thresholds and owners, separated secret domains, and the
+recovery/rollback runbook. 246 tests green (+12 frozen legacy).
+
+**Phase 6 — Challenge/Debate** delivered: versioned deterministic triggers
+(`CHALLENGE_RULES_1`), bounded focused debates, Python-owned status effects
+(never READY), complete `ChallengeRecord` persistence, and `/debate` +
+`/why` Telegram views.
+
 **Phase 5 — Telegram MVP** (feature-flagged off until Phase 6).
 
 Principle: **Python calculates. Agents interpret. Decision Agent challenges.
@@ -18,6 +31,9 @@ everything executes over a deterministic fake transport.
 ```
 agent_based/
 ├── orchestrator.py        # Phase 4 AnalysisService (lifecycle → synthesis → replay)
+├── scheduler.py           # Phase 8 post-market scheduler (gates, missed runs, backfill)
+├── ops.py                 # Phase 8 ops: circuit breaker, metrics, health, secret separation
+├── RUNBOOK.md             # Phase 8 recovery/rollback runbook with completed drill
 ├── agents/                # Phase 3/4 analyst agents (fake transport; Hermes later)
 │   ├── base.py            # prompts, validation pipeline, bounded retries, redaction
 │   ├── market_agent.py    # Market Agent (regime/environment over market slice)
@@ -155,7 +171,7 @@ for rec in result.decision_records:
 ## Tests
 
 ```bash
-python3 -m pytest agent_based/cacingnaga/tests/ -q   # 168 tests (Phase 0 → 5)
+python3 -m pytest agent_based/cacingnaga/tests/ -q   # 246 tests (Phase 0 → 8)
 python3 -m pytest tests/ -q                          # 12 legacy tests (frozen baseline)
 ```
 
@@ -318,8 +334,125 @@ Both suites are green on Python 3.12+ (verified on 3.14 / pandas 3.0.5).
 - **Store hardening**: `AuditStore(thread_safe=True)` serializes one SQLite
   connection across handler threads (needed by any real bot service).
 
-## Next phases (not started)
+## What Phase 6 delivered
 
-- **Phase 6**: challenge/debate mechanism (the Telegram gate opens after
-  its contract passes).
-- **Phase 7+**: backtest integration, evaluation/ablations, scheduling.
+- **Versioned deterministic trigger** (`cacingnaga/challenges.py`,
+  `CHALLENGE_RULES_1`): debates fire only from known conflict rule ids
+  (R1–R4) on MATERIAL/HARD severity — benign low-confidence differences
+  produce no conflict and never trigger. An explicit `/debate TICKER`
+  additionally debates that ticker's MINOR-caution conflicts (the operator
+  asked); a request cannot invent a debate where no conflict exists.
+- **Focused packets + bounded turns** (items 2–4, 9): each questioned agent
+  gets its own reading, the conflict's evidence ids, and its claim boundary
+  (SUPPORT/REVISE/WITHDRAW only); one round, `CHALLENGE_MAX_TURNS=2`
+  attempts per agent, strict `ChallengeResponse` schema with required
+  evidence citations, missing-data acknowledgment, and the hostile-payload
+  guards (no prices/scores/tickers). The Decision Agent classifies the
+  debate under a distinct request identity (`DecisionAgentResolution`) so
+  transports route it independently of the Phase 4 proposal turn, while
+  persisting under the Decision Agent name.
+- **Python disposes** (item 7): `python_status_effect` recomputes the
+  authoritative effect from the classification PLUS the recorded stances —
+  a claimed REVISED without an actual revise/withdraw stance is treated as
+  UNRESOLVED (storytelling cannot lift a conflict). Vocabulary is
+  NONE / CAP_AT_WAIT / BLOCK_READY; READY is structurally impossible. A
+  resolved material conflict lifts the Phase 4 WAIT cap only up to Python's
+  own gate verdict — the hard gates always keep their floor.
+- **Complete `ChallengeRecord` persistence** (item 6): rule versions, the
+  packet (questions + evidence), per-turn validated views, raw rows via
+  `save_agent_output`, the resolution (a failed turn serializes as the
+  canonical UNRESOLVED stub), the Python effect, and deterministic
+  `CH-…` ids — stored in the `challenges` table and referenced from each
+  `CandidateDecision.challenge_ref` and the `decisions` rows.
+- **Telegram surface** (item 8): `/debate TICKER` renders the concise
+  stored debate (stances, classification, effect) only when a debate
+  exists; `/why` surfaces the debate reference into the full persisted
+  trail. Still store-reads only; never re-runs an LLM.
+
+## What Phase 7 delivered
+
+- **Configurable accepted status (item 1)**: `BacktestConfig.accepted_status`
+  chooses READY (default) or WAIT as the status that feeds the entry
+  simulator — no hardcoded `Ready to Enter`. REJECT is refused by
+  validation (diagnostic only, item 5).
+- **Extended trade records (item 3)**: actual fill and TP1/TP2/SL hit
+  dates, discrete `actual_result` (WIN/LOSS/FLAT), gross **and**
+  cost-adjusted returns, holding sessions, and the per-position IHSG
+  benchmark return; MFE/MAE measured from the actual entry fill (item 7).
+  Entry/gap/stop/simultaneous-TP/two-target rules stay the frozen
+  EXECUTION_POLICY v1 set (item 4).
+- **Status semantics distinct (items 5–6)**: READY creates trades; WAIT
+  records `NOT_TAKEN` plus a separately labeled trigger counterfactual
+  that fills at the plan's entry-zone floor (WAIT confirmation signal);
+  REJECT returns are diagnostics only; unfilled entry-zone recommendations
+  remain `NOT_EXECUTED` — distinct from rejected and executed.
+- **Provenance-complete `SignalRecord` (item 2)**: policy version, agent
+  set, challenge reference, prompt hash, model reference, config hash and
+  the trade row travel with every signal (schema `SIGNAL_RECORD_1`).
+- **Date-matched ablations (item 9)**: five arms (no-AI, Technical-only,
+  Technical+Flow, +Market filter, full Decision) over the *same*
+  point-in-time pool and dates; only score weights change per arm (sum
+  renormalized to 1.0), gates/risk plans stay fixed.
+- **Deterministic baselines (item 11)**: IHSG horizon returns, fee-free
+  buy-and-hold, seeded random eligible picks (seed=42), the **frozen
+  legacy screener** run point-in-time through the read-only adapter, and
+  the deterministic `AI_TEAM_DAILY_V1` replay.
+- **Metrics (item 8) + basket drawdown (item 10)**: READY/WAIT/REJECT
+  rates, WAIT confirmation, losses avoided by REJECT, confidence-band
+  stability, overtrading ratio vs the screener; maximum drawdown on a
+  documented equal-weight evaluation basket — explicitly an evaluation
+  construct, not production position sizing.
+- **Frozen promotion gate (item 12)**: `EvalCriteria(frozen=True)` pins
+  minimum sample, horizon, costs, and the promotion edge *before* any
+  variant selection; `promotion_decision` never promotes on unknown
+  metrics or insufficient samples, and an unfrozen criteria object
+  refuses to promote at all.
+- **Reproducible evaluation (item 14)**: `run_evaluation(...)` returns one
+  byte-reproducible machine-readable report (`EVALUATION_REPORT_1`) with
+  the promotion decision and the historical-results disclaimer;
+  `render_evaluation_report` renders deterministic Markdown. Catalysts
+  remain UNKNOWN/forward-paper until provenance-proven archived news
+  exists (item 13).
+
+## What Phase 8 delivered
+
+- **Post-market scheduler (item 1)**: `scheduler.py` fires exactly one run
+  per IDX trading session through the same `AnalysisService` idempotency
+  and persistence path as CLI/Telegram. Gates evaluate in order: trading
+  day → market close (16:00 WIB + cooldown, `IDX_TZ` imported from the
+  frozen legacy so the clock can never drift) → already-run (replay,
+  zero calls) → missed-run report → stale-data (as_of must cover the
+  session; a stale trigger records an auditable FAILED row and runs no
+  agent). Every decision is a structured, auditable `ScheduleDecision`.
+- **Operations hardening (items 2–4)**: `ops.py` provides a CLOSED → OPEN
+  → HALF_OPEN circuit breaker (injectable clock, bounded probe budget,
+  reopen-on-failed-probe) over a request-keyed response cache — identical
+  prompts within a process reuse the identical response; retries stay
+  bounded by `TransportConfig`. `stage_metrics` emits secret-free records
+  (values on token/key/secret-named fields are redacted), and
+  `run_health_checks` aggregates market data, Hermes, storage, scheduler,
+  and Telegram with per-stage alert thresholds and a named owner per
+  stage (`STAGE_OWNERS`, `ALERT_THRESHOLDS`).
+- **Secret separation (item 5)**: the three domains — Telegram bot token,
+  Hermes runtime credentials, legacy Gemini key — each read from a
+  distinct environment variable; `validate_secret_separation` fails
+  closed when two domains share a value.
+- **Compatibility and backfill (items 6–7)**: the scheduler refuses to
+  start a run under a mismatched `pipeline_version` or invalid config
+  (item 6). Missed sessions are never auto-backfilled: recovery is the
+  explicit `run_backfill(as_of=...)` with a point-in-time snapshot built
+  from historical frames; the backfill refuses any snapshot whose `as_of`
+  does not equal the requested date and rejects non-trading days (item 7).
+- **Runbook and rollout (items 8–9)**: `RUNBOOK.md` documents stale data,
+  provider outage, malformed output, database recovery, missed run, and
+  rollback to the frozen legacy screener, with a completed drill
+  (automated in `test_scheduler.py`). The legacy GitHub Actions schedule
+  stays untouched; a separate `ai_team_tests.yml` workflow runs the
+  package tests only.
+
+38 Phase 8 tests in `cacingnaga/tests/test_scheduler.py` exercise every
+exit criterion: holiday/missed-run/duplicate/stale/outage/restart each
+produce the documented safe state, alerts identify the failed stage
+without leaking secrets, manual replay reconstructs the same stored
+run/policy state, and rollback returns operation to the legacy screener
+without data loss.

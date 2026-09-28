@@ -428,9 +428,17 @@ class AuditStore:
     # -- decisions ------------------------------------------------------------
 
     def save_decisions(
-        self, run_id: str, decisions: Iterable[tuple[str, str, str, float, int | None]]
+        self,
+        run_id: str,
+        decisions: Iterable[tuple[str, str, str, float, int | None]],
+        *,
+        challenge_refs: dict[str, str] | None = None,
     ) -> None:
-        """Store (ticker, final_status, agent_proposed_status, score, rank) rows."""
+        """Store (ticker, final_status, agent_proposed_status, score, rank) rows.
+
+        ``challenge_refs`` optionally maps ticker → Phase 6 debate record id,
+        persisted inside the row payload for the audit trail.
+        """
         run = self.get_run(run_id)
         if run is None:
             raise ContractViolation(f"unknown run: {run_id}")
@@ -444,6 +452,7 @@ class AuditStore:
                 "agent_proposed_status": proposed,
                 "score": score,
                 "rank": rank,
+                "challenge_ref": (challenge_refs or {}).get(ticker),
                 "recorded_at": now,
             }
             self._conn.execute(
@@ -513,6 +522,54 @@ class AuditStore:
         )
         self._conn.commit()
         return output_id
+
+    # -- challenges (Phase 6: complete ChallengeRecord persistence) ------------
+
+    def save_challenge(
+        self,
+        run_id: str,
+        *,
+        challenge_id: str,
+        ticker: str,
+        conflict_type: str,
+        status_effect: str,
+        record: dict[str, Any],
+    ) -> None:
+        """Persist one complete ``ChallengeRecord`` (item 6).
+
+        The canonical record payload carries rule versions, the packet
+        (questions + evidence ids), validated turn views, the resolution, the
+        final status effect, and the agent_outputs ids holding the raw
+        responses. Re-saving the same challenge_id replaces the row.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            raise ContractViolation(f"unknown run: {run_id}")
+        self._conn.execute(
+            "INSERT OR REPLACE INTO challenges (challenge_id, run_id, ticker,"
+            " conflict_type, status_effect, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                challenge_id, run_id, ticker, conflict_type, status_effect,
+                canonical_json(record),
+            ),
+        )
+        self._conn.commit()
+
+    def get_challenge(self, challenge_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM challenges WHERE challenge_id = ?",
+            (challenge_id,),
+        ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def get_challenges(self, run_id: str) -> list[dict[str, Any]]:
+        """All ChallengeRecords for one run (ordered by ticker, rule)."""
+        rows = self._conn.execute(
+            "SELECT payload_json FROM challenges WHERE run_id = ?"
+            " ORDER BY ticker, conflict_type",
+            (run_id,),
+        ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
 
     def get_agent_outputs(self, run_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(

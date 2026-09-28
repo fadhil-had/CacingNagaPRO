@@ -151,6 +151,7 @@ class PolicyOutcome:
     risks: tuple[str, ...]
     risk_plan: RiskPlanResult
     confidence_band: str = "LOW"
+    challenge_ref: str | None = None      # Phase 6: id of the debate record
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -399,6 +400,7 @@ class DecisionPolicy:
                     f"{RiskPlanCalculator.version}:{o.risk_plan.levels.fact_hash}"
                     if o.risk_plan.levels is not None else ""
                 ),
+                challenge_ref=o.challenge_ref,
             )
 
         recommendations = tuple(

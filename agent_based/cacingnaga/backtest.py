@@ -34,7 +34,12 @@ LOT_SIZE = 100
 
 @dataclass(frozen=True)
 class BacktestConfig:
-    """Execution assumptions frozen in EXECUTION_POLICY.md (v1)."""
+    """Execution assumptions frozen in EXECUTION_POLICY.md (v1).
+
+    ``accepted_status`` (Phase 7 item 1): which policy status feeds the
+    entry/execution simulator instead of hardcoding READY. ``REJECT`` is
+    never a legal accepted status (item 5: REJECT is diagnostic only).
+    """
 
     fee_pct: float = DEFAULT_FEE_PCT            # buy+sell, % per side
     slippage_pct: float = DEFAULT_SLIPPAGE_PCT  # % adverse per side
@@ -43,6 +48,7 @@ class BacktestConfig:
     evaluation_days: int = 10                   # MFE/MAE window (post-fill)
     max_positions_per_day: int = 3              # execution capacity
     fee_free_buy_and_hold: bool = True          # benchmark convention
+    accepted_status: str = "READY"              # READY | WAIT (item 1)
 
     def validate(self) -> None:
         if self.fee_pct < 0 or self.slippage_pct < 0:
@@ -51,11 +57,20 @@ class BacktestConfig:
             raise ContractViolation("backtest windows must be positive")
         if self.max_positions_per_day < 1:
             raise ContractViolation("execution capacity must be at least one position per day")
+        if self.accepted_status not in ("READY", "WAIT"):
+            raise ContractViolation(
+                "accepted_status must be READY or WAIT (REJECT is diagnostic only)"
+            )
 
 
 @dataclass
 class TradeRecord:
-    """One replayed outcome (READY trade, WAIT counterfactual, or REJECT diag)."""
+    """One replayed outcome (READY trade, WAIT counterfactual, or REJECT diag).
+
+    Phase 7 item 3 extensions: hit dates for each target/stop, the discrete
+    ``actual_result``, and the cost-free ``gross_return_pct`` alongside the
+    cost-adjusted net. Benchmark return stays per-position (entry→exit).
+    """
 
     screen_date: str
     ticker: str
@@ -71,6 +86,12 @@ class TradeRecord:
     ihsg_return_pct: float = float("nan")
     mfe_pct: float = float("nan")
     mae_pct: float = float("nan")
+    gross_return_pct: float = float("nan")   # before costs (raw fill prices)
+    tp1_hit_date: str | None = None
+    tp2_hit_date: str | None = None
+    sl_hit_date: str | None = None
+    actual_result: str | None = None          # WIN / LOSS / FLAT (executed only)
+    confidence_band: str | None = None        # policy band at signal time
     notes: tuple[str, ...] = ()
 
     def to_row(self) -> dict[str, Any]:
@@ -89,9 +110,15 @@ class TradeRecord:
             "exit_reason": self.exit_reason,
             "holding_sessions": self.holding_sessions,
             "net_return_pct": _num(self.net_return_pct),
+            "gross_return_pct": _num(self.gross_return_pct),
             "ihsg_return_pct": _num(self.ihsg_return_pct),
             "mfe_pct": _num(self.mfe_pct),
             "mae_pct": _num(self.mae_pct),
+            "tp1_hit_date": self.tp1_hit_date,
+            "tp2_hit_date": self.tp2_hit_date,
+            "sl_hit_date": self.sl_hit_date,
+            "actual_result": self.actual_result,
+            "confidence_band": self.confidence_band,
             "notes": "; ".join(self.notes),
         }
 
@@ -151,15 +178,24 @@ def _simulate_ready(
     levels: Any,
     fills: _Fills,
     cfg: BacktestConfig,
+    *,
+    status: str = "READY",
+    confidence_band: str | None = None,
 ) -> TradeRecord:
-    """Replay one READY decision under the frozen execution policy."""
+    """Replay one accepted decision under the frozen execution policy.
+
+    ``status`` labels the policy status that produced the trade (READY by
+    default; WAIT when ``accepted_status="WAIT"``). Execution rules are
+    identical regardless of label (item 4).
+    """
     entry_low, entry_high = float(levels.entry_low), float(levels.entry_high)
     stop, tp1, tp2 = float(levels.stop_loss), float(levels.tp1), float(levels.tp2)
     record = TradeRecord(
         screen_date=screen_date.date().isoformat(),
         ticker=ticker,
-        status="READY",
+        status=status,
         outcome="NOT_EXECUTED",
+        confidence_band=confidence_band,
     )
 
     # --- entry: T+1 .. T+entry_window, first close-position inside the zone --
@@ -188,6 +224,8 @@ def _simulate_ready(
         record.notes = ("no forward data after fill",)
         return record
     half1_price: float | None = None
+    half1_raw: float | None = None
+    exit_raw: float | None = None
     exit_date: pd.Timestamp | None = None
     exit_price: float | None = None
     exit_reason = ""
@@ -197,24 +235,35 @@ def _simulate_ready(
         open_, high, low = float(bar["Open"]), float(bar["High"]), float(bar["Low"])
         if low <= stop:
             # Gap through the stop fills at the open, never below it (§2.2).
-            exit_date, exit_price = date, fills.sell(min(open_, stop))
+            raw = min(open_, stop)
+            exit_date, exit_price = date, fills.sell(raw)
+            exit_raw = raw
+            record.sl_hit_date = date.date().isoformat()
             exit_reason = "STOP"
             record.outcome = (
                 "EXECUTED_TP1_THEN_STOP" if half1_price is not None else "EXECUTED_STOP"
             )
             break
         if high >= tp2 and half1_price is not None:
-            exit_date, exit_price = date, fills.sell(open_ if open_ > tp2 else tp2)
+            raw = open_ if open_ > tp2 else tp2
+            exit_date, exit_price = date, fills.sell(raw)
+            exit_raw = raw
+            record.tp2_hit_date = date.date().isoformat()
             exit_reason = "TP2"
             record.outcome = "EXECUTED_TP1_THEN_TP2"
             break
         if high >= tp1 and half1_price is None:
             # §2.4: same-bar TP2 is ignored; partial exit at TP1 (gap-aware).
-            half1_price = fills.sell(open_ if open_ > tp1 else tp1)
+            raw = open_ if open_ > tp1 else tp1
+            half1_price = fills.sell(raw)
+            half1_raw = raw
+            record.tp1_hit_date = date.date().isoformat()
             record.outcome = "EXECUTED_TP1_PENDING"
     if exit_date is None:
         last_date, last_bar = window.index[-1], window.iloc[-1]
-        exit_date, exit_price = last_date, fills.sell(float(last_bar["Close"]))
+        exit_date = last_date
+        exit_raw = float(last_bar["Close"])
+        exit_price = fills.sell(exit_raw)
         if half1_price is not None:
             exit_reason = "TP1_THEN_TIME_STOP"
             record.outcome = "EXECUTED_TP1_THEN_TIME"
@@ -236,6 +285,21 @@ def _simulate_ready(
     else:
         net = fills.net_return(entry_price, exit_price)
     record.net_return_pct = round(net, 6)
+
+    # --- gross return: same accounting on raw fill prices (before costs) -----
+    if half1_raw is not None and exit_raw is not None:
+        gross = (
+            (half1_raw / entry_price - 1) + (exit_raw / entry_price - 1)
+        ) / 2 * 100
+    elif exit_raw is not None:
+        gross = (exit_raw / entry_price - 1) * 100
+    else:
+        gross = float("nan")
+    record.gross_return_pct = round(gross, 6) if math.isfinite(gross) else float("nan")
+
+    # --- discrete result label for executed trades ---------------------------
+    if math.isfinite(net):
+        record.actual_result = "WIN" if net > 0 else ("LOSS" if net < 0 else "FLAT")
     record.ihsg_return_pct = round(
         _ihsg_return(ihsg, pd.Timestamp(record.entry_date), pd.Timestamp(record.exit_date)), 6
     )
@@ -257,10 +321,15 @@ def _simulate_counterfactual(
     fills: _Fills,
     cfg: BacktestConfig,
     entry_ref: float | None,
+    *,
+    confidence_band: str | None = None,
 ) -> TradeRecord:
     """WAIT counterfactual / REJECT diagnostic: next-session close to N-day close.
 
     Never creates a position; return is diagnostic only (plan §7 Phase 7).
+    With ``entry_ref`` (WAIT only) the counterfactual fills at the trigger
+    reference level on the first session — the separately labeled WAIT
+    confirmation signal (item 5).
     """
     label = "NOT_TAKEN" if status == "WAIT" else "DIAGNOSTIC_REJECT"
     record = TradeRecord(
@@ -268,6 +337,7 @@ def _simulate_counterfactual(
         ticker=ticker,
         status=status,
         outcome=label,
+        confidence_band=confidence_band,
     )
     sessions = _session_slice(stock, screen_date, cfg.evaluation_days + 1)
     if len(sessions) < 2:
@@ -357,51 +427,69 @@ def run_offline_backtest(
                 "reject_count": len(run.rejected),
             }
         )
-        # Capacity: top-N READY by rank (already deterministic).
-        for decision in run.recommendations[: backtest.max_positions_per_day]:
-            levels = next(
-                (o.risk_plan.levels for o in outcomes if o.ticker == decision.ticker
+        def _stock_for(ticker: str) -> pd.DataFrame | None:
+            frame = stock_frames.get(ticker)
+            if frame is None:
+                return None
+            stock = frame.copy()
+            if getattr(stock.index, "tz", None) is not None:
+                stock.index = pd.to_datetime(stock.index).tz_localize(None)
+            return stock.loc[pd.to_datetime(stock.index) <= pd.Timestamp(date_str)]
+
+        def _levels_for(ticker: str) -> Any | None:
+            return next(
+                (o.risk_plan.levels for o in outcomes if o.ticker == ticker
                  and o.risk_plan.levels is not None),
                 None,
             )
-            frame = stock_frames.get(decision.ticker)
-            if frame is None or levels is None:
+
+        # Item 1: the accepted status feeds the entry simulator (READY by
+        # default; WAIT as an explicit policy experiment). REJECT is never
+        # accepted (item 5) — validated in BacktestConfig.
+        accepted = (
+            run.recommendations if backtest.accepted_status == "READY" else run.wait
+        )
+        accepted_tickers = {d.ticker for d in accepted}
+        for decision in accepted[: backtest.max_positions_per_day]:
+            levels = _levels_for(decision.ticker)
+            stock = _stock_for(decision.ticker)
+            if stock is None or levels is None:
                 continue
-            stock = frame.copy()
-            if getattr(stock.index, "tz", None) is not None:
-                stock.index = pd.to_datetime(stock.index).tz_localize(None)
-            stock = stock.loc[pd.to_datetime(stock.index) <= pd.Timestamp(date_str)]
             trades.append(
                 _simulate_ready(
-                    decision.ticker, pd.Timestamp(date_str), stock, ihsg, levels, fills, backtest
+                    decision.ticker, pd.Timestamp(date_str), stock, ihsg, levels,
+                    fills, backtest,
+                    status=backtest.accepted_status,
+                    confidence_band=decision.confidence_band,
                 )
             )
         for decision in run.wait:
-            frame = stock_frames.get(decision.ticker)
-            if frame is None:
+            if backtest.accepted_status == "WAIT" and decision.ticker in accepted_tickers:
+                continue                     # already simulated as the entry trade
+            stock = _stock_for(decision.ticker)
+            if stock is None:
                 continue
-            stock = frame.copy()
-            if getattr(stock.index, "tz", None) is not None:
-                stock.index = pd.to_datetime(stock.index).tz_localize(None)
-            stock = stock.loc[pd.to_datetime(stock.index) <= pd.Timestamp(date_str)]
+            # WAIT confirmation counterfactual: fill at the plan's entry-zone
+            # floor when a risk plan exists (item 5, separately labeled).
+            outcome = next((o for o in outcomes if o.ticker == decision.ticker), None)
+            levels = outcome.risk_plan.levels if outcome is not None else None
+            entry_ref = float(levels.entry_low) if levels is not None else None
             trades.append(
                 _simulate_counterfactual(
                     decision.ticker, pd.Timestamp(date_str), stock, ihsg, "WAIT",
-                    fills, backtest, entry_ref=None,
+                    fills, backtest, entry_ref=entry_ref,
+                    confidence_band=decision.confidence_band,
                 )
             )
         for decision in run.rejected:
-            frame = stock_frames.get(decision.ticker)
-            if frame is None:
+            stock = _stock_for(decision.ticker)
+            if stock is None:
                 continue
-            stock = frame.copy()
-            if getattr(stock.index, "tz", None) is not None:
-                stock.index = pd.to_datetime(stock.index).tz_localize(None)
-            stock = stock.loc[pd.to_datetime(stock.index) <= pd.Timestamp(date_str)]
             trades.append(
                 _simulate_counterfactual(
                     decision.ticker, pd.Timestamp(date_str), stock, ihsg, "REJECT",
                     fills, backtest, entry_ref=None,
+                    confidence_band=decision.confidence_band,
                 )
             )
 
@@ -414,7 +502,9 @@ def run_offline_backtest(
     }
 
 
-def _build_report(runs: list[dict[str, Any]], trades: list[TradeRecord], cfg: BacktestConfig) -> dict[str, Any]:
+def _build_report(
+    runs: list[dict[str, Any]], trades: list[TradeRecord], cfg: BacktestConfig
+) -> dict[str, Any]:
     executed = [t for t in trades if t.outcome.startswith("EXECUTED")]
     unfilled = [t for t in trades if t.outcome == "NOT_EXECUTED"]
     wins = [t for t in executed if t.net_return_pct > 0]
@@ -441,6 +531,18 @@ def _build_report(runs: list[dict[str, Any]], trades: list[TradeRecord], cfg: Ba
         "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
         "wait_counterfactuals": sum(1 for t in trades if t.outcome == "NOT_TAKEN"),
         "reject_diagnostics": sum(1 for t in trades if t.outcome == "DIAGNOSTIC_REJECT"),
+        # Phase 7 item 3 extensions.
+        "accepted_status": cfg.accepted_status,
+        "actual_results": {
+            "win": sum(1 for t in executed if t.actual_result == "WIN"),
+            "loss": sum(1 for t in executed if t.actual_result == "LOSS"),
+            "flat": sum(1 for t in executed if t.actual_result == "FLAT"),
+        },
+        "average_gross_return_pct": (
+            float(np.mean([t.gross_return_pct for t in executed
+                           if math.isfinite(t.gross_return_pct)]))
+            if any(math.isfinite(t.gross_return_pct) for t in executed) else None
+        ),
     }
 
 

@@ -1,0 +1,42 @@
+name: AI Analyst Team tests
+
+# Phase 8 work item 9: the legacy screener schedule stays in
+# financial_screener.yml untouched; this workflow only runs the agent_based
+# package tests (plus the frozen benchmark tests) on code changes.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - 'agent_based/**'
+      - '.github/workflows/ai_team_tests.yml'
+  pull_request:
+    paths:
+      - 'agent_based/**'
+  workflow_dispatch:
+
+jobs:
+  package-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Compile and test the agent package
+        run: |
+          python3 -m py_compile agent_based/**/*.py
+          python3 -m pytest agent_based/ tests/ -q

@@ -173,6 +173,11 @@ def render_why_message(run: RunResult, ticker: str) -> str:
             if decision.conflicts:
                 lines.append("<b>Conflicts</b>")
                 lines.extend("• " + escape(redact(c)) for c in decision.conflicts[:4])
+            if decision.challenge_ref:
+                lines.append(
+                    "Debate: " + escape(decision.challenge_ref)
+                    + " (full record: /debate " + escape(decision.ticker) + ")"
+                )
             lines.append(
                 f"Proposed by agent: {escape(decision.agent_proposed_status)} | "
                 f"final: {escape(decision.final_status)}"
@@ -185,6 +190,53 @@ def render_why_message(run: RunResult, ticker: str) -> str:
         f"{escape(ticker)} is not in run {escape(run.run_id)} "
         "(evaluated candidates only)."
     )
+
+
+def render_debate_message(run: RunResult, ticker: str, records: list[dict[str, Any]]) -> str:
+    """`/debate` view (Phase 6 item 8): the concise debate for one ticker.
+
+    Reads ONLY stored ChallengeRecords; shows the concise debate only when it
+    adds material context (a ticker with no debates gets that explicitly).
+    """
+    needle = ticker.strip().upper()
+    mine = [r for r in records if r.get("ticker", "").upper() == needle]
+    if not mine:
+        return (
+            f"No recorded debate for {escape(needle)} in run "
+            f"{escape(run.run_id)}. Debates run only on detected conflicts "
+            "or explicit requests that found one."
+        )
+    lines = [f"<b>Debate — {escape(needle)}</b> (run {escape(run.run_id)})"]
+    for record in mine:
+        conflict = record.get("conflict", {})
+        lines.append(
+            f"• {escape(conflict.get('rule_id', ''))} "
+            f"({escape(conflict.get('conflict_type', ''))}): "
+            f"{escape(str(conflict.get('description', ''))[:140])}"
+        )
+        stances = ", ".join(
+            f"{escape(t.get('agent_name', ''))}: {escape(t.get('stance', ''))}"
+            for t in record.get("agent_outcomes", ())
+        )
+        if stances:
+            lines.append(f"  Stances: {stances}")
+        resolution = record.get("resolution", {})
+        effect = record.get("status_effect", "NONE")
+        effect_text = (
+            "resolved — no status effect"
+            if effect == "NONE" and record.get("resolved")
+            else escape(effect)
+        )
+        lines.append(
+            f"  Resolution: {escape(resolution.get('resolution', ''))} — {effect_text}"
+        )
+        summary = resolution.get("summary", "")
+        if summary:
+            lines.append(f"  Summary: {escape(str(summary)[:200])}")
+    lines.append(
+        "<i>Full audit trail: /why " + escape(needle) + "</i>"
+    )
+    return "\n".join(lines)
 
 
 def render_status_message(runs: list[Any]) -> str:
@@ -208,6 +260,7 @@ def render_help_message(enabled: bool) -> str:
         "/market — IHSG regime snapshot",
         "/status — recent runs",
         "/why TICKER — persisted reasoning for a decision",
+        "/debate TICKER — stored conflict debate for a ticker",
     ]
     if not enabled:
         lines.append(

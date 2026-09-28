@@ -535,6 +535,105 @@ class DecisionInterpretation(_InterpretationPayload):
         return _from_payload(cls, payload)
 
 
+# ---------------------------------------------------------------------------
+# Phase 6 — challenge/debate contracts (plan §7 Phase 6, items 3–5)
+# ---------------------------------------------------------------------------
+
+
+# Claim boundary: an agent may only defend or withdraw its own validated
+# reading; anything else is out of scope for a challenge turn.
+CHALLENGE_STANCES = ("SUPPORT", "REVISE", "WITHDRAW")
+CHALLENGE_RESOLUTIONS = ("CONFIRMED", "REVISED", "UNRESOLVED")
+# The vocabulary of effects Python may apply after a debate. READY is
+# deliberately absent (item 7): a debate can hold a candidate back or lift a
+# resolved material cap — it can never promote anything to READY.
+CHALLENGE_STATUS_EFFECTS = ("NONE", "CAP_AT_WAIT", "BLOCK_READY")
+
+
+@dataclass(frozen=True)
+class ChallengeResponse(_InterpretationPayload):
+    """One agent's answer to a focused challenge question (item 3).
+
+    ``stance`` is bounded to the agent's own claim boundary: SUPPORT defends
+    the original reading, REVISE downgrades part of it, WITHDRAW retracts it.
+    Responses must acknowledge missing data (``missing_data``) and cite
+    evidence ids; Python validates that no new prices, scores, or tickers
+    enter the debate (item 4).
+    """
+
+    agent_name: str = ""
+    ticker: str = ""
+    conflict_rule_id: str = ""
+    stance: str = "SUPPORT"
+    missing_data: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+    def validate(self) -> None:
+        _require(bool(self.agent_name), "ChallengeResponse.agent_name is required")
+        _require(bool(self.ticker), "ChallengeResponse.ticker is required")
+        _require(bool(self.conflict_rule_id), "ChallengeResponse.conflict_rule_id is required")
+        _validate_enum(self.stance, CHALLENGE_STANCES, "ChallengeResponse.stance")
+        _validate_reason_list(list(self.missing_data), "missing_data")
+        _validate_reason_list(list(self.reasons), "reasons")
+        _validate_reason_list(list(self.evidence_refs), "evidence_refs")
+        _require(
+            len(self.reasons) >= 1 and len(self.evidence_refs) >= 1,
+            "ChallengeResponse must argue with at least one cited reason",
+        )
+        for field_name in self.__dict__:
+            _require(
+                field_name not in FORBIDDEN_AGENT_FIELDS,
+                f"forbidden agent field: {field_name}",
+            )
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ChallengeResponse":
+        return _from_payload(cls, payload)
+
+
+@dataclass(frozen=True)
+class ChallengeResolution(_InterpretationPayload):
+    """Decision Agent's resolution of one conflict (item 5).
+
+    ``status_effect`` names the preconfigured consequence applied when the
+    conflict stays unresolved (item 7): a hard conflict rejects, a material
+    one caps at WAIT — READY is never an available effect.
+    """
+
+    ticker: str = ""
+    conflict_rule_id: str = ""
+    resolution: str = "UNRESOLVED"
+    status_effect: str = "CAP_AT_WAIT"
+    summary: str = ""
+    reasons: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+    def validate(self) -> None:
+        _require(bool(self.ticker), "ChallengeResolution.ticker is required")
+        _require(bool(self.conflict_rule_id), "ChallengeResolution.conflict_rule_id is required")
+        _validate_enum(self.resolution, CHALLENGE_RESOLUTIONS, "ChallengeResolution.resolution")
+        _validate_enum(self.status_effect, CHALLENGE_STATUS_EFFECTS, "ChallengeResolution.status_effect")
+        _require(bool(self.summary), "ChallengeResolution.summary is required")
+        _validate_reason_list(list(self.reasons), "reasons")
+        _validate_reason_list(list(self.evidence_refs), "evidence_refs")
+        _require(len(self.evidence_refs) >= 1, "ChallengeResolution must cite evidence")
+        # Item 7: an unresolved conflict can never dissolve into READY.
+        _require(
+            not (self.resolution == "UNRESOLVED" and self.status_effect == "READY"),
+            "UNRESOLVED conflicts cannot carry a READY effect",
+        )
+        for field_name in self.__dict__:
+            _require(
+                field_name not in FORBIDDEN_AGENT_FIELDS,
+                f"forbidden agent field: {field_name}",
+            )
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ChallengeResolution":
+        return _from_payload(cls, payload)
+
+
 # ===========================================================================
 # Layer 3 — Python-owned final decisions and run result
 # ===========================================================================

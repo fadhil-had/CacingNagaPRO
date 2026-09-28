@@ -18,6 +18,10 @@ conflict status effects. Deterministic rules, applied in order:
    candidate with hard-gate failures is a no-op (it was never READY).
 4. **Python floor** — when no valid Decision Agent outcome exists (failed
    turn), the deterministic status stands unchanged (never improvised).
+5. **Challenge lift (Phase 6)** — a debate that actually resolved a material
+   conflict lifts the Phase 4 WAIT cap, but never past Python's own gate
+   verdict (``challenge_lifted=True``); the hard gates always keep their
+   floor.
 
 Everything the merge consumed is recorded so the decision is traceable:
 ``AgentDecisionRecord`` carries the proposal, the conflicts, the veto/accept
@@ -25,6 +29,7 @@ reasons, and the final status.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +56,7 @@ class AgentDecisionRecord:
     proposal_accepted: bool = False
     proposal_vetoed: bool = False
     veto_reason: str = ""
+    challenge_ref: str | None = None    # Phase 6: id of the debate record
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -64,13 +70,22 @@ class AgentDecisionRecord:
             "proposal_accepted": self.proposal_accepted,
             "proposal_vetoed": self.proposal_vetoed,
             "veto_reason": self.veto_reason,
+            "challenge_ref": self.challenge_ref,
         }
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — challenge effect application (plan §7 Phase 6, item 7)
+# ---------------------------------------------------------------------------
 
 
 def merge_decision(
     outcome: Any,                      # PolicyOutcome
     decision: Any | None,              # DecisionInterpretation | None (failed turn)
     conflicts: tuple[Conflict, ...],
+    *,
+    challenge_lifted: bool = False,    # Phase 6: resolved material conflict
+    challenge_ref: str | None = None,  # Phase 6: debate record id
 ) -> AgentDecisionRecord:
     """Apply the deterministic merge rules for one candidate.
 
@@ -102,7 +117,7 @@ def merge_decision(
     proposed = getattr(decision, "proposed_status", None) if decision is not None else None
     if proposed is None:
         notes.append("decision agent unavailable; deterministic status stands")
-        return AgentDecisionRecord(
+        record = AgentDecisionRecord(
             ticker=outcome.ticker,
             python_status=python_status,
             agent_proposed_status=python_status,
@@ -110,7 +125,9 @@ def merge_decision(
             score=outcome.score,
             conflicts=conflicts,
             merge_notes=tuple(notes),
+            challenge_ref=challenge_ref,
         )
+        return _apply_lift(record, challenge_lifted, worst, python_status)
     if proposed not in ("READY", "WAIT", "REJECT"):
         raise ContractViolation(f"unknown agent proposed status: {proposed}")
 
@@ -142,7 +159,7 @@ def merge_decision(
             accepted = True
             notes.append(f"justified downgrade to {proposed} accepted")
 
-    return AgentDecisionRecord(
+    record = AgentDecisionRecord(
         ticker=outcome.ticker,
         python_status=python_status,
         agent_proposed_status=proposed,
@@ -153,4 +170,33 @@ def merge_decision(
         proposal_accepted=accepted,
         proposal_vetoed=vetoed,
         veto_reason=veto_reason,
+        challenge_ref=challenge_ref,
     )
+    return _apply_lift(record, challenge_lifted, worst, python_status)
+
+
+def _apply_lift(
+    record: AgentDecisionRecord,
+    challenge_lifted: bool,
+    worst: str | None,
+    python_status: str,
+) -> AgentDecisionRecord:
+    """Shared post-merge lift for a resolved material conflict (Phase 6).
+
+    Lift rule: a debate that actually resolved the material conflict removes
+    the WAIT cap **only** up to Python's own gate verdict — never past the
+    hard gates (a failed-turn or gated-out candidate stays put).
+    """
+    if (
+        challenge_lifted
+        and worst == SEVERITY_MATERIAL
+        and record.final_status == "WAIT"
+        and python_status == "READY"
+    ):
+        return dataclasses.replace(
+            record,
+            final_status="READY",
+            merge_notes=record.merge_notes
+            + ("challenge resolved the material conflict; cap lifted to READY",),
+        )
+    return record

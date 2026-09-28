@@ -103,7 +103,7 @@ def run_service(config: TelegramConfig) -> None:
             await update.message.reply_text(reply, parse_mode=parse_mode)
 
     application = Application.builder().token(config.bot_token).build()
-    for command in ("screen", "analyze", "market", "status", "why", "help", "start"):
+    for command in ("screen", "analyze", "debate", "market", "status", "why", "help", "start"):
         application.add_handler(CommandHandler(command, respond))
     application.run_polling(drop_pending_updates=True)
 

@@ -240,7 +240,7 @@ def test_renderer_escapes_user_influenced_strings(store_with_run):
 
     synthesis = next(
         o["validated"] for o in store_with_run.get_agent_outputs(stored.run_id)
-        if o["agent_name"] == "AnalysisService"
+        if o["agent_name"] == "AnalysisService" and "run_result" in o["validated"]
     )
     run = _run_result_from_payload(synthesis["run_result"])
     message = render_why_message(run, "CUAN.JK")
@@ -375,7 +375,7 @@ def test_rendering_does_not_mutate_canonical_results(store_with_run):
 
     synthesis = next(
         o["validated"] for o in store_with_run.get_agent_outputs(stored.run_id)
-        if o["agent_name"] == "AnalysisService"
+        if o["agent_name"] == "AnalysisService" and "run_result" in o["validated"]
     )
     run = _run_result_from_payload(synthesis["run_result"])
     before = run.payload() if hasattr(run, "payload") else None

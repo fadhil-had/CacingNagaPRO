@@ -24,6 +24,7 @@ from cacingnaga.store import AuditStore
 
 from .config import TelegramConfig
 from .render import (
+    render_debate_message,
     render_help_message,
     render_market_message,
     render_run_message,
@@ -101,6 +102,7 @@ class CacingNagaBot:
         handlers = {
             "/screen": self.cmd_screen,
             "/analyze": self.cmd_analyze,
+            "/debate": self.cmd_debate,
             "/market": self.cmd_market,
             "/status": self.cmd_status,
             "/why": self.cmd_why,
@@ -128,7 +130,14 @@ class CacingNagaBot:
         from orchestrator import _run_result_from_payload
 
         for output in self._store.get_agent_outputs(run_id):
-            if output["agent_name"] == "AnalysisService" and output["validation_ok"]:
+            # Challenge markers share the service agent name; only the true
+            # synthesis carries the run_result payload.
+            if (
+                output["agent_name"] == "AnalysisService"
+                and output["validation_ok"]
+                and isinstance(output["validated"], dict)
+                and "run_result" in output["validated"]
+            ):
                 return _run_result_from_payload(output["validated"]["run_result"])
         return None
 
@@ -177,6 +186,22 @@ class CacingNagaBot:
         if run is None:
             return ("No completed run yet — try /screen first.", "HTML")
         body = render_market_message(self._run_result_from_synthesis(run.run_id))
+        return (f"[latest run: {run.run_id}]\n\n{body}", "HTML")
+
+    def cmd_debate(self, argument: str) -> tuple[str, str]:
+        """Phase 6 item 8: show the concise stored debate for one ticker."""
+        try:
+            ticker = normalize_ticker(argument)
+        except ContractViolation as exc:
+            return (f"⚠️ {escape_outer(exc)}", "HTML")
+        run = self._latest_run()
+        if run is None:
+            return ("No completed run yet — try /screen first.", "HTML")
+        body = render_debate_message(
+            self._run_result_from_synthesis(run.run_id),
+            ticker,
+            self._store.get_challenges(run.run_id),
+        )
         return (f"[latest run: {run.run_id}]\n\n{body}", "HTML")
 
     def cmd_status(self, argument: str) -> tuple[str, str]:
