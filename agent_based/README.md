@@ -37,13 +37,14 @@ agent_based/
 ├── ops.py                 # Phase 8 ops: circuit breaker, metrics, health, secret separation
 ├── deployment.py          # Deployment layer: TOML config, live snapshot, shadow transport
 ├── RUNBOOK.md             # Phase 8 recovery/rollback runbook with completed drill
-├── agents/                # Phase 3/4 analyst agents (fake transport; Hermes later)
+├── agents/                # Phase 3/4 analyst agents + Phase 9 cross-agent consultation
 │   ├── base.py            # prompts, validation pipeline, bounded retries, redaction
 │   ├── market_agent.py    # Market Agent (regime/environment over market slice)
 │   ├── technical_agent.py # Technical Agent (setup/structure per candidate)
 │   ├── flow_agent.py      # Flow Agent (OBV/MFI/CMF; UNKNOWN ≠ neutral; no bandar claims)
 │   ├── decision_agent.py  # Phase 4 Decision Agent (fixed evidence packet)
 │   ├── merge.py           # Phase 4 Python final-decision merge (conflicts, veto)
+│   ├── peer_review.py     # Phase 9 consultation round (agents see each other's claims)
 │   └── runner.py          # run_agents + persist_agent_outputs (failure isolation)
 ├── telegram_layer/        # Phase 5 Telegram MVP (gated; named to avoid PTB shadowing)
 │   ├── config.py          # feature flag + sender/chat allowlists
@@ -60,6 +61,7 @@ agent_based/
     ├── legacy_adapter.py  # loads frozen scripts/screener_ranking.py by path
     ├── snapshot.py        # Phase 1 snapshot + per-field evidence ids (fact_evidence_refs)
     ├── transport.py       # Phase 3 AgentTransport protocol, FakeTransport, bounded config
+    ├── llm_transport.py   # Phase 9 live Gemini transport, per-agent model routing
     ├── conflicts.py       # Phase 4 versioned deterministic conflict rules
     ├── risk.py            # Phase 2 RiskPlanCalculator (long-only, IDX ticks, mandates)
     ├── policy.py          # Phase 2 DecisionPolicy (components, gates, rank, finalize_run)
@@ -180,26 +182,87 @@ reference:
 
 ```bash
 python3 scripts/ai_team.py run       # scheduled post-market job (all gates)
-python3 scripts/ai_team.py screen    # one manual shadow run (no scheduler gates)
+python3 scripts/ai_team.py screen    # one manual run (no scheduler gates)
 python3 scripts/ai_team.py health    # secret-free ops report
 python3 scripts/ai_team.py telegram  # long-lived bot service (feature-flag gated)
+
+# Transport selection (default: auto)
+python3 scripts/ai_team.py screen --transport live    # require the live LLM
+python3 scripts/ai_team.py screen --transport smoke   # require the shadow stub
 ```
 
 Live data flows only through the frozen-legacy loaders
 (`download_ihsg` / `download_saham_batch` / the universe Excel file) into
-`build_snapshot` — the deployment layer adds no new data path. The Hermes
-runtime remains unconfirmed (decision #16), so runs execute on
-`CacingNagaSmokeTransport`: a deterministic shadow transport whose every
-audit record is tagged `CACINGNAGA_SMOKE_V1` and whose interpretations echo
-Python facts (never inventing numbers, news, or flow claims). A real
-transport drops in later without touching the entrypoint. Exit codes:
+`build_snapshot` — the deployment layer adds no new data path.
+
+## Live LLM transport
+
+The Hermes runtime is implemented in `cacingnaga/llm_transport.py`
+(`GeminiLLMTransport`). Every agent turn is served by **its own routed model**,
+so the analysts are genuinely separate voices rather than one model roleplaying
+five parts:
+
+| Agent | Default model | Job |
+|---|---|---|
+| `MarketAgent` | `gemini-3.8-flash` | IHSG regime, momentum, volatility, breadth |
+| `TechnicalAgent` | `gemini-3.5-flash-lite` | price structure, setup, momentum per candidate |
+| `FlowAgent` | `gemini-3.5-flash-lite` | OBV/MFI/CMF/volume per candidate |
+| `DecisionAgent` | `gemini-3.8-flash` | status proposal over the fixed evidence packet |
+| `ChallengeAgent` | `gemini-3.5-flash-lite` | defends/revises its own reading under challenge |
+| `DecisionAgentResolution` | `gemini-3.8-flash` | classifies the completed debate |
+
+Override any of them in `config/ai_team.toml` under `[llm.models]`; a
+`models` entry replaces only the model id, leaving that agent's temperature,
+token budget, and role persona intact. Each agent also carries a **persona**
+(temperature, thinking budget, and a role focus block) defined in
+`DEFAULT_ROUTES`.
+
+Each turn is requested as strict JSON constrained by a per-agent response
+schema, so the provider cannot emit fields the contracts would reject anyway.
+A narrow normalization step repairs enum *case* (`"bullish"` → `"BULLISH"`)
+and *shape* (a bare string where a list is required) and records every repair
+in `agent_outputs.usage.normalized`. It never invents content, never touches
+numbers, and never weakens evidence-citation checks — a payload that still
+violates a contract fails closed exactly as before.
+
+Until `[llm] enabled` is set **and** `$AGENT_LLM_API_KEY` is exported, runs
+execute on `CacingNagaSmokeTransport`: a deterministic shadow transport whose
+every audit record is tagged `CACINGNAGA_SMOKE_V1` and whose interpretations
+echo Python facts (never inventing numbers, news, or flow claims). A live run
+is tagged `gemini-live` with the real model id, so the audit trail always says
+which provider served a run. `--transport` overrides the choice; `auto` is the
+default and degrades to smoke when the key is absent. Exit codes:
 0 = ran/replayed/safe skip, 1 = configuration/contract failure,
 2 = degraded run (PARTIAL/FAILED → page per RUNBOOK.md).
+
+## Cross-agent consultation (peer review)
+
+`agents/peer_review.py` adds one bounded round in which the Technical and Flow
+agents for the same candidate see **each other's reading** plus the Market
+reading, and may confirm or revise. This is what lets a technical-bullish /
+flow-distribution split surface *before* Python scores it, instead of only
+inside the Phase 6 debate.
+
+Boundaries it deliberately keeps:
+
+- the consultation turn answers the **same contract**, so no LLM can introduce a
+  status, score, price, or rank — Python still disposes;
+- peers receive each other's *claims*, never each other's raw fact slices, so
+  the fact-isolation boundary holds;
+- the envelope carries exactly one candidate, so no ticker leaks;
+- evidence citations are checked exactly as in the first pass;
+- **a failed consultation keeps the first-pass reading and does not degrade the
+  run** — a second opinion is enrichment, not a dependency;
+- both turns are persisted in `agent_outputs`, so the reconciled reading and the
+  revision behind it are reconstructable.
+
+Enable it with `peer_review = true` under `[agents]` in
+`config/ai_team.toml`.
 
 ## Tests
 
 ```bash
-python3 -m pytest agent_based/cacingnaga/tests/ -q   # 266 tests (Phase 0 → 8 + deployment)
+python3 -m pytest agent_based/cacingnaga/tests/ -q   # 321 tests (Phase 0 → 9 + deployment)
 python3 -m pytest tests/ -q                          # 12 legacy tests (frozen baseline)
 ```
 

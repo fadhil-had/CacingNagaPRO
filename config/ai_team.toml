@@ -58,3 +58,47 @@ store_path = "output/audit_store.sqlite3"
 
 [storage]
 store_path = "output/audit_store.sqlite3"
+
+[agents]
+# Cross-agent consultation round (Phase 9). After the independent Technical and
+# Flow passes, each takes one extra turn in which it sees the other specialist's
+# reading plus the Market reading for the same candidate, and may confirm or
+# revise. A failed consultation keeps the first-pass reading, so this never
+# degrades the run — it only sharpens the reconciled interpretation. Both turns
+# are stored in agent_outputs.
+peer_review = false
+
+[llm]
+# Live agent provider. `enabled` alone does nothing: the transport also needs
+# the API key in the environment. Until both hold, runs stay on the
+# deterministic smoke transport and every record is tagged CACINGNAGA_SMOKE_V1.
+enabled = false
+# Secret *name* only; the value stays in the environment. This is a Google AI
+# Studio / Gemini API key. Rename it if you prefer, but keep it distinct from
+# LEGACY_GEMINI_API_KEY below or startup fails on secret separation.
+api_key_env = "AGENT_LLM_API_KEY"
+provider = "gemini"
+default_model = "gemini-3.8-flash"
+default_temperature = 0.2
+timeout_seconds = 60.0
+max_attempts = 3
+
+[llm.models]
+# Per-agent model routing — each agent reasons with its own model, so the
+# analysts are genuinely independent voices rather than one model roleplaying
+# five parts. Omit an agent to keep its built-in default route
+# (see cacingnaga/llm_transport.py: DEFAULT_ROUTES). Entries listed here
+# override only the model id; temperature, token budget, and the role persona
+# stay per-agent in code.
+#
+# Both models below are free of charge on Google's Free tier. The split is by
+# call volume, not by difficulty: Flash-Lite carries the per-candidate reading
+# work (2 calls per candidate), 3.8 Flash carries the few high-stakes calls
+# (market regime, synthesis, consultation, resolution). See RUNBOOK.md §1a for
+# the daily request budget this implies.
+MarketAgent = "gemini-3.8-flash"
+TechnicalAgent = "gemini-3.5-flash-lite"
+FlowAgent = "gemini-3.5-flash-lite"
+DecisionAgent = "gemini-3.8-flash"
+ChallengeAgent = "gemini-3.5-flash-lite"
+DecisionAgentResolution = "gemini-3.8-flash"

@@ -5,10 +5,13 @@ recoverable deployment. Companion docs: `HANDOFF.md` (system overview,
 promotion gate), `RUNBOOK.md` (incidents), `README.md` (architecture),
 `config/ai_team.toml` (the file this guide configures).
 
-Current mode: **shadow** — every agent turn runs on the deterministic
-`CacingNagaSmokeTransport` and is tagged `CACINGNAGA_SMOKE_V1` in the audit
-trail. The deployment steps below are mode-independent; swapping in a real
-Hermes transport later changes one wiring point (§7), nothing else.
+Current mode: **configurable** — the pipeline runs on either the live Gemini
+transport (`cacingnaga/llm_transport.py`, one routed model per agent, every
+record tagged `gemini-live` with its real model id) or the deterministic
+`CacingNagaSmokeTransport` (tagged `CACINGNAGA_SMOKE_V1`). `auto` picks live
+only when `[llm] enabled` is set **and** `$AGENT_LLM_API_KEY` is exported;
+otherwise it stays in shadow. The audit tag always records which provider
+actually served a run.
 
 ---
 
@@ -27,7 +30,7 @@ Hermes transport later changes one wiring point (§7), nothing else.
 Sanity check before anything else:
 
 ```bash
-python3.14 -m pytest agent_based/ tests/ -q   # 275 passed = healthy checkout
+python3.14 -m pytest agent_based/ tests/ -q   # 333 passed = healthy checkout
 ```
 
 ## 2. Configure
@@ -50,13 +53,16 @@ invalid universes, and shared secrets at startup). Review every section:
 - `[telegram]` — `enabled` stays **false** until §6; allowlists; the
   token env-var *name*.
 - `[storage]` — `store_path` (default `output/audit_store.sqlite3`).
+- `[agents]` — `peer_review` (cross-agent consultation round; default `false`).
+- `[llm]` / `[llm.models]` — live provider settings and per-agent model
+  routing (default `enabled = false`, i.e. shadow).
 
 ### Secrets (environment only — never in the file)
 
 ```bash
 # .env-style or your secret manager; three distinct domains:
 export TELEGRAM_BOT_TOKEN="..."        # only if §6 is enabled
-export HERMES_API_TOKEN="..."          # only for a real transport (§7)
+export AGENT_LLM_API_KEY="..."          # only for the live LLM transport (§7)
 export LEGACY_GEMINI_API_KEY="..."     # legacy screener, if that feature is used
 ```
 
@@ -67,7 +73,8 @@ with `secret separation violated` before anything runs.
 
 ```bash
 python3 scripts/ai_team.py health            # five surfaces report OK
-python3 scripts/ai_team.py screen            # one manual shadow run end-to-end
+python3 scripts/ai_team.py screen            # one manual run end-to-end
+python3 scripts/ai_team.py screen --transport smoke   # force shadow explicitly
 ```
 
 `screen` proves the whole chain — live fetch through the frozen-legacy
@@ -169,22 +176,52 @@ window:
 5. Commands: `/screen /analyze /market /status /why /debate /help` —
    store-backed, single-flight, HTML-escaped, chunked under 4096 chars.
 
-## 7. Swap in the real transport (post-shadow)
+## 7. Going live (the Hermes transport)
 
-When the Hermes runtime is confirmed (decision #16):
+The live transport ships in `cacingnaga/llm_transport.py`
+(`GeminiLLMTransport`), so there is nothing left to implement — only to enable.
 
-1. Implement `AgentTransport.complete()` (see `cacingnaga/transport.py`
-   for the contract; `CacingNagaSmokeTransport` in
-   `agent_based/deployment.py` is the reference shape — return
-   `AgentResponse(raw_text, payload, usage, latency_ms)`).
-2. Replace the smoke transport in `scripts/ai_team.py::_build_service`.
-   Everything else — retries, circuit breaker, response cache,
-   validation, persistence — already wraps the transport generically.
-3. Set `HERMES_API_TOKEN`; run `screen` once and confirm agent outputs now
-   carry the real `usage.model`.
-4. Promotion still requires the Phase 7 evaluation gate
+1. Export the key and flip the flag:
+
+   ```bash
+   export AGENT_LLM_API_KEY="..."      # never in the repo or the config file
+   ```
+
+   ```toml
+   # config/ai_team.toml
+   [llm]
+   enabled = true
+   api_key_env = "AGENT_LLM_API_KEY"  # name only; the value stays in the env
+   ```
+
+2. Smoke-test with a real provider before trusting the schedule:
+
+   ```bash
+   python3 scripts/ai_team.py screen --transport live
+   ```
+
+   Confirm `agent_outputs.usage` now shows `transport: "gemini-live"` and the
+   per-agent `model`, not `CACINGNAGA_SMOKE_V1`.
+3. Per-agent model routing lives in `[llm.models]`. A listed entry overrides
+   only that agent's model id; its temperature, token budget, and role persona
+   stay as defined in `DEFAULT_ROUTES`. Review the split with the owner before
+   the first live run — the default puts the two heaviest reasoning roles
+   (market regime, final synthesis) on the pro tier and the per-candidate
+   readers on flash.
+4. Cross-agent consultation is opt-in: set `peer_review = true` under
+   `[agents]` to run the Phase 9 round where the Technical and Flow agents see
+   each other's reading before synthesis. It roughly doubles agent calls per
+   candidate and never degrades the run on failure.
+5. `--transport smoke` is the instant revert: it forces the deterministic
+   transport regardless of the config flag, so a bad live run is recoverable
+   without editing the config or restarting anything.
+6. Promotion still requires the Phase 7 evaluation gate
    (`full_decision` ≥ screener + 0.5 `average_net_return_pct`, frozen
    criteria) — see `HANDOFF.md` §5.
+
+**Secret separation** is enforced at startup: the Telegram token, the Hermes
+key, and the legacy Gemini key must be three different values. Sharing one key
+across domains fails closed before any run starts.
 
 ## 8. Rollback
 

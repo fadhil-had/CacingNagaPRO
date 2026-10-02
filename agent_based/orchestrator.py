@@ -209,11 +209,15 @@ class AnalysisService:
         transport: AgentTransport,
         *,
         transport_config: TransportConfig | None = None,
+        peer_review: bool = False,
+        peer_review_max_candidates: int | None = None,
     ) -> None:
         self._config = config
         self._store = store
         self._transport = transport
         self._transport_config = transport_config
+        self._peer_review = peer_review
+        self._peer_review_max_candidates = peer_review_max_candidates
         self._policy = DecisionPolicy(config)
         self._config_hash = canonical_hash(config_payload(config))
 
@@ -278,6 +282,7 @@ class AnalysisService:
             self._transport,
             config=self._transport_config,
             run_id=run_id,
+            peer_review=self._peer_review,
         )
         agent_runner.persist_agent_outputs(self._store, run_id, report)
 

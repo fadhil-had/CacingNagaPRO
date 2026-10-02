@@ -658,7 +658,7 @@ def test_secret_separation_rejects_shared_values():
     with pytest.raises(ContractViolation, match="secret separation"):
         validate_secret_separation({
             "TELEGRAM_BOT_TOKEN": "same-secret",
-            "HERMES_API_TOKEN": "same-secret",
+            "AGENT_LLM_API_KEY": "same-secret",
         })
 
 
@@ -666,13 +666,13 @@ def test_secret_separation_allows_distinct_and_absent():
     validate_secret_separation({})                      # nothing configured
     validate_secret_separation({"TELEGRAM_BOT_TOKEN": "a"})
     validate_secret_separation({
-        "TELEGRAM_BOT_TOKEN": "a", "HERMES_API_TOKEN": "b",
+        "TELEGRAM_BOT_TOKEN": "a", "AGENT_LLM_API_KEY": "b",
         "LEGACY_GEMINI_API_KEY": "c",
     })
 
 
 def test_secret_env_names_are_distinct():
-    names = {ops.TELEGRAM_TOKEN_ENV, ops.HERMES_TOKEN_ENV, ops.LEGACY_GEMINI_ENV}
+    names = {ops.TELEGRAM_TOKEN_ENV, ops.AGENT_LLM_TOKEN_ENV, ops.LEGACY_GEMINI_ENV}
     assert len(names) == 3
 
 

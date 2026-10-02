@@ -33,7 +33,9 @@ from typing import Any, Mapping
 from cacingnaga.config import AIAnalystConfig, ScreenerConfig
 from cacingnaga.errors import ContractViolation, SnapshotError
 from cacingnaga.legacy_adapter import get_legacy_ranking
+from cacingnaga.llm_transport import LLMTransportConfig, build_llm_config
 from cacingnaga.snapshot import AnalysisSnapshot, build_snapshot
+from ops import AGENT_LLM_TOKEN_ENV
 from cacingnaga.transport import AgentRequest, AgentResponse, TransportConfig
 
 from scheduler import IDXCalendar, SchedulerConfig
@@ -72,6 +74,19 @@ class DeploymentConfig:
     telegram_allowed_user_ids: tuple[int, ...] = ()
     telegram_allowed_chat_ids: tuple[int, ...] = ()
     store_path: str = "output/audit_store.sqlite3"
+    #: Phase 9 live-provider + cross-agent consultation settings. The smoke
+    #: transport remains the default until the agent LLM key is exported.
+    llm_enabled: bool = False
+    llm_api_key_env: str = AGENT_LLM_TOKEN_ENV
+    llm_provider: str = "gemini"
+    llm_default_model: str = "gemini-2.5-flash"
+    llm_default_temperature: float = 0.2
+    llm_timeout_seconds: float = 60.0
+    llm_max_attempts: int = 3
+    #: agent name -> model id, overriding the built-in per-agent routes.
+    llm_models: Mapping[str, str] = field(default_factory=dict)
+    #: Run one Technical/Flow consultation round per candidate.
+    peer_review: bool = False
 
     def validate(self) -> None:
         from cacingnaga.errors import ContractViolation as _CV
@@ -93,6 +108,12 @@ class DeploymentConfig:
             raise _CV("ops circuit-breaker bounds are invalid")
         if self.half_open_probes < 1:
             raise _CV("ops.half_open_probes must be at least 1")
+        if self.llm_max_attempts < 1 or self.llm_max_attempts > 5:
+            raise _CV("llm.max_attempts must be within [1, 5]")
+        if self.llm_timeout_seconds <= 0:
+            raise _CV("llm.timeout_seconds must be positive")
+        if not 0.0 <= self.llm_default_temperature <= 2.0:
+            raise _CV("llm.default_temperature must be within [0, 2]")
         self.scheduler.validate()
 
     def payload(self) -> dict[str, Any]:
@@ -132,8 +153,22 @@ class DeploymentConfig:
                 "allowed_user_ids": list(self.telegram_allowed_user_ids),
                 "allowed_chat_ids": list(self.telegram_allowed_chat_ids),
             },
+            "llm": self.llm_config().payload(),
+            "peer_review": self.peer_review,
             "store_path": self.store_path,
         }
+
+    def llm_config(self) -> LLMTransportConfig:
+        """Live-provider settings (model routing only — never a secret value)."""
+        return build_llm_config(
+            api_key_env=self.llm_api_key_env,
+            provider=self.llm_provider,
+            default_model=self.llm_default_model,
+            default_temperature=self.llm_default_temperature,
+            timeout_seconds=self.llm_timeout_seconds,
+            max_attempts=self.llm_max_attempts,
+            models=self.llm_models,
+        )
 
 
 def load_deployment_config(
@@ -160,6 +195,7 @@ def load_deployment_config(
     ops_raw = raw.get("ops", {})
     tg_raw = raw.get("telegram", {})
     storage_raw = raw.get("storage", {})
+    llm_raw = raw.get("llm", {})
 
     calendar = IDXCalendar(
         extra_holidays=frozenset(sched_raw.get("extra_holidays", []))
@@ -195,6 +231,18 @@ def load_deployment_config(
         telegram_allowed_user_ids=tuple(int(i) for i in tg_raw.get("allowed_user_ids", []) or ()),
         telegram_allowed_chat_ids=tuple(int(i) for i in tg_raw.get("allowed_chat_ids", []) or ()),
         store_path=str(storage_raw.get("store_path", "output/audit_store.sqlite3")),
+        llm_enabled=bool(llm_raw.get("enabled", False)),
+        llm_api_key_env=str(llm_raw.get("api_key_env", AGENT_LLM_TOKEN_ENV)),
+        llm_provider=str(llm_raw.get("provider", "gemini")),
+        llm_default_model=str(llm_raw.get("default_model", "gemini-2.5-flash")),
+        llm_default_temperature=float(llm_raw.get("default_temperature", 0.2)),
+        llm_timeout_seconds=float(llm_raw.get("timeout_seconds", 60.0)),
+        llm_max_attempts=int(llm_raw.get("max_attempts", 3)),
+        llm_models={
+            str(name): str(model)
+            for name, model in (llm_raw.get("models", {}) or {}).items()
+        },
+        peer_review=bool(raw.get("agents", {}).get("peer_review", False)),
     )
     config.validate()
 
@@ -203,10 +251,14 @@ def load_deployment_config(
     from ops import validate_secret_separation
 
     token_env = config.telegram_bot_token_env
+    # Keyed by the three secret-domain names ``validate_secret_separation``
+    # inspects, so a renamed agent-LLM env var is still cross-checked.
+    from ops import LEGACY_GEMINI_ENV, TELEGRAM_TOKEN_ENV
+
     env_subset = {
-        token_env: env.get(token_env, ""),
-        "HERMES_API_TOKEN": env.get("HERMES_API_TOKEN", ""),
-        "LEGACY_GEMINI_API_KEY": env.get("LEGACY_GEMINI_API_KEY", ""),
+        TELEGRAM_TOKEN_ENV: env.get(token_env, ""),
+        AGENT_LLM_TOKEN_ENV: env.get(config.llm_api_key_env, ""),
+        LEGACY_GEMINI_ENV: env.get("LEGACY_GEMINI_API_KEY", ""),
     }
     validate_secret_separation(env_subset)
     return config
@@ -297,6 +349,13 @@ class CacingNagaSmokeTransport:
             payload = self._challenge(request)
         elif request.agent_name == "DecisionAgentResolution":
             payload = self._resolution(env)
+        elif request.agent_name in (
+            "TechnicalAgentPeerReview",
+            "FlowAgentPeerReview",
+        ):
+            # Consultation turn: echo the agent's own first-pass reading, so
+            # shadow mode exercises the round without inventing a revision.
+            payload = self._peer_echo(request)
         else:
             raise ContractViolation(
                 f"smoke transport has no handler for {request.agent_name!r}"
@@ -336,6 +395,50 @@ class CacingNagaSmokeTransport:
             ],
             "evidence_refs": [close_ref],
         }
+
+    def _peer_echo(self, request: AgentRequest) -> dict[str, Any]:
+        """Consultation turn: confirm the agent's own first-pass reading.
+
+        Shadow mode has nothing to add to its own reading, so it confirms it
+        and records that no revision occurred. Returning a *different* reading
+        would be inventing interpretation, which shadow mode must never do.
+        """
+        env = request.envelope
+        first = env.get("your_first_reading")
+        peers = env.get("peer_readings") or {}
+        if not isinstance(first, dict) or not first:
+            raise ContractViolation(
+                f"{request.agent_name}: consultation turn without a first-pass "
+                "reading to confirm"
+            )
+        payload = {
+            key: list(value) if isinstance(value, (list, tuple)) else value
+            for key, value in first.items()
+        }
+        # Note the exchange without changing the reading itself.
+        notes = [
+            f"CACINGNAGA_SMOKE_V1: consultation confirms the first-pass "
+            f"reading; no live model attached"
+        ]
+        if peers:
+            notes.append(
+                f"CACINGNAGA_SMOKE_V1: consulted "
+                f"{', '.join(sorted(peers))}; peer claims not adjudicated in "
+                f"shadow mode"
+            )
+        # Contract free-text lists, in the order a reading normally carries
+        # them. ``first`` comes from ``payload()``, so its sequences are tuples.
+        for key in ("reasons", "risks", "evidence", "risk_flags", "concerns"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload[key] = value + [notes[0]]
+                break
+        else:
+            raise ContractViolation(
+                f"{request.agent_name}: first-pass reading has no free-text "
+                "field to record the consultation"
+            )
+        return payload
 
     def _technical(self, env: Mapping[str, Any]) -> dict[str, Any]:
         candidate = env["candidates"][0]

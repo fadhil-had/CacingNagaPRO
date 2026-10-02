@@ -25,14 +25,23 @@ from .flow_agent import assert_no_bandar_certainty, build_interpretation as buil
 from .market_agent import AGENT_NAME as MARKET_AGENT
 from .market_agent import assert_market_scope, build_interpretation as build_market
 from .merge import AgentDecisionRecord, merge_decision
+from .peer_review import (
+    FLOW_REVIEW_AGENT,
+    PEER_ROUND_VERSION,
+    TECHNICAL_REVIEW_AGENT,
+    consult_candidate,
+)
 from .technical_agent import AGENT_NAME as TECHNICAL_AGENT
 from .technical_agent import assert_ticker_matches
 
 __all__ = [
     "DECISION_AGENT",
     "FLOW_AGENT",
+    "FLOW_REVIEW_AGENT",
     "MARKET_AGENT",
+    "PEER_ROUND_VERSION",
     "TECHNICAL_AGENT",
+    "TECHNICAL_REVIEW_AGENT",
     "AgentDecisionRecord",
     "AgentOutcome",
     "AgentResult",
@@ -41,6 +50,7 @@ __all__ = [
     "assert_ticker_matches",
     "build_flow",
     "build_market",
+    "consult_candidate",
     "merge_decision",
     "redact",
     "run_with_retries",

@@ -12,10 +12,12 @@ funnels through the same ``AnalysisService`` idempotency/persistence path:
                  Hermes, storage, scheduler, and Telegram.
 - ``telegram`` — the long-lived Telegram service (feature-flag gated).
 
-Shadow mode: the Hermes runtime is deliberately unconfirmed (decision #16),
-so the entrypoint runs on ``CacingNagaSmokeTransport`` — a deterministic
-transport whose every record is tagged ``CACINGNAGA_SMOKE_V1`` in the audit
-trail. A real transport later drops in without touching this file.
+Shadow mode: with ``[llm] enabled`` and ``$HERMES_API_TOKEN`` exported, the
+Hermes runtime is live and every agent turn is served by its own routed model
+(:mod:`cacingnaga.llm_transport`). Otherwise the entrypoint runs on
+``CacingNagaSmokeTransport`` — a deterministic transport whose every record is
+tagged ``CACINGNAGA_SMOKE_V1`` in the audit trail. ``--transport`` overrides
+the choice; the audit tag always records which provider actually served a run.
 
 Usage (repository root)::
 
@@ -24,6 +26,7 @@ Usage (repository root)::
     python3 scripts/ai_team.py health
     python3 scripts/ai_team.py telegram
     python3 scripts/ai_team.py run --config config/ai_team.toml
+    python3 scripts/ai_team.py screen --transport smoke
 
 Exit codes: 0 = ran / replayed / safe skip; 1 = configuration or contract
 failure; 2 = run degraded (PARTIAL/FAILED) — operators page per RUNBOOK.md.
@@ -33,13 +36,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "agent_based"))
 
-from cacingnaga.errors import CacingNagaError  # noqa: E402
+from cacingnaga.errors import CacingNagaError, ContractViolation  # noqa: E402
+from cacingnaga.llm_transport import GeminiLLMTransport, build_llm_transport  # noqa: E402
 from cacingnaga.store import AuditStore  # noqa: E402
 
 from deployment import (  # noqa: E402
@@ -53,18 +58,47 @@ from orchestrator import AnalysisService  # noqa: E402
 from scheduler import Scheduler  # noqa: E402
 
 
-def _build_service(store: AuditStore, config, deployment):
-    """One service per run: smoke transport wrapped by the ops bounds."""
-    inner = CacingNagaSmokeTransport()
+def _build_transport(deployment, *, mode: str = "auto"):
+    """Resolve the agent transport: live provider, smoke, or auto-detected.
+
+    ``auto`` prefers the live provider when ``llm.enabled`` and the configured
+    API-key env var is set, and falls back to the deterministic smoke transport
+    otherwise, so a missing key degrades to shadow instead of failing the run.
+    """
+    key_env = deployment.llm_api_key_env
+    have_key = bool((os.environ.get(key_env) or "").strip())
+
+    if mode == "smoke" or (mode == "auto" and not (deployment.llm_enabled and have_key)):
+        return CacingNagaSmokeTransport()
+    if not have_key:
+        raise ContractViolation(
+            f"--transport live requires ${key_env}; export it or use "
+            "--transport smoke"
+        )
+    return build_llm_transport(deployment.llm_config())
+
+
+def _build_service(store: AuditStore, config, deployment, *, transport_mode: str = "auto"):
+    """One service per run: the resolved transport wrapped by the ops bounds."""
+    inner = _build_transport(deployment, mode=transport_mode)
+    transport_config = None
+    if isinstance(inner, GeminiLLMTransport):
+        transport_config = inner.config.transport_config()
     breaker_policy = CircuitBreakerPolicy(
         failure_threshold=deployment.failure_threshold,
         cooldown_seconds=deployment.cooldown_seconds,
         half_open_probes=deployment.half_open_probes,
     )
     transport = CachedBreakerTransport(
-        inner, breaker_policy=breaker_policy
+        inner, transport_config=transport_config, breaker_policy=breaker_policy
     )
-    return AnalysisService(config, store, transport)
+    return AnalysisService(
+        config,
+        store,
+        transport,
+        transport_config=transport_config,
+        peer_review=deployment.peer_review,
+    )
 
 
 def _open_store(deployment) -> AuditStore:
@@ -73,13 +107,15 @@ def _open_store(deployment) -> AuditStore:
     return AuditStore(path)
 
 
-def cmd_run(deployment, config, *, now=None) -> int:
+def cmd_run(deployment, config, *, now=None, transport_mode="auto") -> int:
     """Scheduled post-market job (gates decide; the pipeline executes)."""
     store = _open_store(deployment)
     scheduler = Scheduler(
         config,
         store,
-        lambda analysis_date, snapshot: _build_service(store, config, deployment),
+        lambda analysis_date, snapshot: _build_service(
+            store, config, deployment, transport_mode=transport_mode
+        ),
         scheduler_config=deployment.scheduler,
         clock=(lambda _n=None: now) if now is not None else None,
     )
@@ -117,11 +153,11 @@ def cmd_run(deployment, config, *, now=None) -> int:
     return 0
 
 
-def cmd_screen(deployment, config) -> int:
-    """One manual shadow run (no scheduler gates; pipeline gates still apply)."""
+def cmd_screen(deployment, config, *, transport_mode="auto") -> int:
+    """One manual run (no scheduler gates; pipeline gates still apply)."""
     store = _open_store(deployment)
     snapshot = load_live_snapshot(deployment, config)
-    service = _build_service(store, config, deployment)
+    service = _build_service(store, config, deployment, transport_mode=transport_mode)
     result = service.run_full_analysis(
         snapshot,
         run_id=f"manual-{snapshot.analysis_date}",
@@ -196,6 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         "--now", default=None,
         help="override the wall clock (ISO datetime, WIB) — drills/testing only",
     )
+    parser.add_argument(
+        "--transport", choices=("auto", "live", "smoke"), default="auto",
+        help="agent transport: live (real LLM per agent, requires "
+             f"${{api_key_env}}), smoke (deterministic CACINGNAGA_SMOKE_V1), or "
+             "auto (live when enabled and the key is set, else smoke)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -213,7 +255,13 @@ def main(argv: list[str] | None = None) -> int:
 
     command = COMMANDS[args.command]
     try:
-        if args.now is not None and args.command in ("run", "health"):
+        if args.command in ("run", "screen"):
+            if now is not None and args.command == "run":
+                return command(
+                    deployment, config, now=now, transport_mode=args.transport
+                )
+            return command(deployment, config, transport_mode=args.transport)
+        if now is not None and args.command == "health":
             return command(deployment, config, now=now)
         return command(deployment, config)
     except CacingNagaError as exc:

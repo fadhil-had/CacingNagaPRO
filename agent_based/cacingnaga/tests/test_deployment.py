@@ -154,7 +154,7 @@ def test_config_rejects_shared_secrets_at_startup(tmp_path):
     path = _write_config(tmp_path, FULL_CONFIG)
     env = {
         "TELEGRAM_BOT_TOKEN": "shared",
-        "HERMES_API_TOKEN": "shared",
+        "AGENT_LLM_API_KEY": "shared",
     }
     with pytest.raises(ContractViolation, match="secret separation"):
         load_deployment_config(path, env=env)

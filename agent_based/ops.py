@@ -49,7 +49,11 @@ def _monotonic() -> float:
 # ---------------------------------------------------------------------------
 
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
-HERMES_TOKEN_ENV = "HERMES_API_TOKEN"
+#: The agent runtime's provider key. Historically named "Hermes" — the internal
+#: codename for this project's agent transport. Hermes is not a vendor and has
+#: no key of its own; the value is a Google AI Studio / Gemini API key, chosen
+#: to be self-explanatory at the call site.
+AGENT_LLM_TOKEN_ENV = "AGENT_LLM_API_KEY"
 LEGACY_GEMINI_ENV = "LEGACY_GEMINI_API_KEY"
 
 
@@ -62,7 +66,7 @@ def validate_secret_separation(env: Mapping[str, str]) -> None:
     """
     values = {
         name: env.get(name, "").strip()
-        for name in (TELEGRAM_TOKEN_ENV, HERMES_TOKEN_ENV, LEGACY_GEMINI_ENV)
+        for name in (TELEGRAM_TOKEN_ENV, AGENT_LLM_TOKEN_ENV, LEGACY_GEMINI_ENV)
     }
     set_names = [name for name, value in values.items() if value]
     if len(set_names) < 2:
